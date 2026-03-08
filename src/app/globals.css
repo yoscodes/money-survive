@@ -1,0 +1,38 @@
+@import "tailwindcss";
+
+:root {
+  /* Survival & Growth: dark base, high-contrast */
+  --background: #05060a;
+  --foreground: #e7e9ee;
+  --app-bg: #05060a;
+  --app-fg: #e7e9ee;
+  --app-crimson: #dc143c;
+  --app-emerald: #10b981;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    /* light は任意（基本は dark を想定） */
+    --background: #ffffff;
+    --foreground: #0b0f1a;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), ui-sans-serif, system-ui, -apple-system,
+    BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+/* 数字を力強く見せる */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
