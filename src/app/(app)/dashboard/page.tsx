@@ -1,12 +1,18 @@
+import { Suspense } from "react";
 import { createSupabaseServer } from "@/lib/supabase/server";
 import { AddTransactionCard, TransactionList } from "./ui";
 import { SurvivalStatus } from "./SurvivalStatus";
 import { BuddyRoastCard } from "./BuddyRoastCard";
+import { CauseInsights } from "./CauseInsights";
+import { MonthlyBuddyRoastSection } from "./MonthlyBuddyRoastSection";
 import type { Transaction } from "./types";
 import type { BuddyGear } from "@/components/buddy/BuddyAvatar";
 import type { QuestReward } from "@/lib/quests/templates";
-import { buildFinanceSnapshot } from "@/lib/finance/insights";
-import { generateMonthlyBuddyRoast, type MonthlyBuddyRoast } from "@/lib/ai/openai";
+import {
+  buildFinanceSnapshot,
+  filterCurrentMonthTransactions,
+  formatMonthLabel,
+} from "@/lib/finance/insights";
 
 function asQuestReward(value: unknown): QuestReward {
   if (!value || typeof value !== "object") return {};
@@ -20,6 +26,7 @@ function asQuestReward(value: unknown): QuestReward {
 export default async function DashboardPage() {
   const supabase = await createSupabaseServer();
   const { data: userData } = await supabase.auth.getUser();
+  const now = new Date();
 
   const user = userData.user;
   const { data, error } = await supabase
@@ -30,42 +37,13 @@ export default async function DashboardPage() {
     .limit(120);
 
   const items = (data ?? []) as Transaction[];
-  const snapshot = buildFinanceSnapshot(items);
+  const snapshot = buildFinanceSnapshot(items, { now });
+  const buddyLevel = Math.max(
+    1,
+    Math.min(99, 1 + Math.floor(Math.max(0, snapshot.savings) / 50_000)),
+  );
 
-  // ---- Survival metrics (情報は絞る: 数字は最大3つ) ----
-  const now = items.length ? new Date(items[0].created_at) : new Date(0);
-  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-
-  const savings =
-    items.reduce((acc, tx) => acc + (tx.type === "income" ? tx.amount : -tx.amount), 0) || 0;
-
-  const daysWindow = 90;
-  const since = new Date(now.getTime() - daysWindow * 24 * 60 * 60 * 1000);
-  const inWindow = items.filter((tx) => new Date(tx.created_at) >= since);
-  const windowExpense = inWindow
-    .filter((tx) => tx.type === "expense")
-    .reduce((acc, tx) => acc + tx.amount, 0);
-
-  const avgMonthlyExpense =
-    windowExpense > 0 ? (windowExpense / daysWindow) * 30 : null;
-
-  const monthItems = items.filter((tx) => new Date(tx.created_at) >= monthStart);
-  const monthlySurplus =
-    monthItems.length === 0
-      ? null
-      : monthItems.reduce(
-          (acc, tx) => acc + (tx.type === "income" ? tx.amount : -tx.amount),
-          0,
-        );
-
-  const survivalDays =
-    avgMonthlyExpense && avgMonthlyExpense > 0
-      ? Math.max(0, Math.floor((Math.max(0, savings) / avgMonthlyExpense) * 30))
-      : null;
-
-  const buddyLevel = Math.max(1, Math.min(99, 1 + Math.floor(Math.max(0, savings) / 50_000)));
-
-  const recentExpenses = items.filter((tx) => tx.type === "expense");
+  const monthItems = filterCurrentMonthTransactions(items, now);
   const monthExpenses = monthItems
     .filter((tx) => tx.type === "expense")
     .slice(0, 8)
@@ -82,10 +60,7 @@ export default async function DashboardPage() {
       amount: tx.amount,
       createdAt: tx.created_at,
     }));
-  const monthLabel =
-    items.length > 0
-      ? `${now.getUTCFullYear()}年${now.getUTCMonth() + 1}月`
-      : "今月";
+  const monthLabel = formatMonthLabel(now);
 
   let buddyGear: BuddyGear | undefined = undefined;
   if (user?.id) {
@@ -110,23 +85,6 @@ export default async function DashboardPage() {
     if (shield || hasArmor) buddyGear = { shield, armor: hasArmor };
   }
 
-  let monthlyRoast: MonthlyBuddyRoast | null = null;
-  if (monthExpenses.length >= 2) {
-    try {
-      monthlyRoast = await generateMonthlyBuddyRoast({
-        monthLabel,
-        savings: snapshot.savings,
-        monthlySurplus: snapshot.monthlySurplus,
-        avgMonthlyExpense: snapshot.avgMonthlyExpense,
-        survivalDays: snapshot.survivalDays,
-        expenses: monthExpenses,
-        incomes: monthIncomes,
-      });
-    } catch {
-      monthlyRoast = null;
-    }
-  }
-
   return (
     <div className="grid gap-5">
       {error ? (
@@ -144,20 +102,29 @@ export default async function DashboardPage() {
       ) : (
         <>
           <SurvivalStatus
-            survivalDays={survivalDays}
-            savings={savings}
-            avgMonthlyExpense={avgMonthlyExpense}
-            monthlySurplus={monthlySurplus}
+            snapshot={snapshot}
             buddyLevel={buddyLevel}
             buddyGear={buddyGear}
-            recentExpenses={recentExpenses}
           />
 
-          <BuddyRoastCard roast={monthlyRoast} monthLabel={monthLabel} />
+          <div className="grid gap-5 xl:grid-cols-[minmax(0,1.4fr)_minmax(320px,0.8fr)]">
+            <CauseInsights snapshot={snapshot} />
+            <Suspense fallback={<BuddyRoastCard roast={null} monthLabel={monthLabel} loading />}>
+              <MonthlyBuddyRoastSection
+                monthLabel={monthLabel}
+                savings={snapshot.savings}
+                monthlySurplus={snapshot.monthlySurplus}
+                avgMonthlyExpense={snapshot.avgMonthlyExpense}
+                survivalDays={snapshot.survivalDays}
+                expenses={monthExpenses}
+                incomes={monthIncomes}
+              />
+            </Suspense>
+          </div>
 
-          <div className="grid gap-5 lg:grid-cols-2">
+          <div className="grid gap-5 xl:grid-cols-[360px_minmax(0,1fr)]">
             <AddTransactionCard />
-            <TransactionList items={items.slice(0, 12)} />
+            <TransactionList items={items} />
           </div>
         </>
       )}

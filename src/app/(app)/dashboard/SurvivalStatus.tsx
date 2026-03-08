@@ -1,7 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
-import type { Transaction } from "./types";
+import type { FinanceSnapshot } from "@/lib/finance/insights";
 import { BuddyAvatar, wealthFromSavings, type BuddyGear, type BuddyRisk } from "@/components/buddy/BuddyAvatar";
 
 function formatDays(days: number | null) {
@@ -18,34 +18,65 @@ function buddyState(survivalDays: number | null) {
   return "safe" as const;
 }
 
-function calcShrinkHours(amount: number, avgMonthlyExpense: number | null) {
-  if (!avgMonthlyExpense || avgMonthlyExpense <= 0) return null;
-  const daily = avgMonthlyExpense / 30;
-  const hours = (amount / daily) * 24;
-  if (!Number.isFinite(hours)) return null;
-  return Math.round(hours);
+function buildPriorityMessage(snapshot: FinanceSnapshot) {
+  if (snapshot.transactionCount === 0) {
+    return {
+      title: "最初の3件を記録する",
+      body: "収入か支出を3件ほど入れると、危険度や改善候補がかなり具体的になります。",
+      tone: "neutral" as const,
+    };
+  }
+
+  if (snapshot.monthlySurplus !== null && snapshot.monthlySurplus < 0) {
+    const recurring = snapshot.recurringExpenseCandidates[0];
+    if (recurring) {
+      return {
+        title: `固定費候補「${recurring.label}」を見直す`,
+        body: `${recurring.count}回出ている支出です。まずは平均 ${Math.round(recurring.averageAmount).toLocaleString()}円の固定化を疑うと、今月の余力を戻しやすいです。`,
+        tone: "danger" as const,
+      };
+    }
+  }
+
+  const hotspot = snapshot.smallExpenseHotspots[0];
+  if (hotspot) {
+    return {
+      title: `小口支出「${hotspot.label}」を止血する`,
+      body: `${hotspot.count}回の積み重ねが効いています。1回の金額は小さくても、頻度を半分にするだけで体感が変わります。`,
+      tone: "warn" as const,
+    };
+  }
+
+  const highExpense = snapshot.highExpenseItems[0];
+  if (highExpense) {
+    return {
+      title: `高額支出「${highExpense.label}」の再発防止`,
+      body: `${Math.round(highExpense.amount).toLocaleString()}円クラスの支出は1回で重く効きます。次回条件を先に決めると安定しやすいです。`,
+      tone: "warn" as const,
+    };
+  }
+
+  return {
+    title: "記録を続けて精度を上げる",
+    body: "支出名が揃ってくるほど、固定費候補や削減ポイントを具体的に提案できるようになります。",
+    tone: "neutral" as const,
+  };
 }
 
 export function SurvivalStatus({
-  survivalDays,
-  savings,
-  avgMonthlyExpense,
-  monthlySurplus,
+  snapshot,
   buddyLevel,
   buddyGear,
-  recentExpenses,
 }: {
-  survivalDays: number | null;
-  savings: number;
-  avgMonthlyExpense: number | null;
-  monthlySurplus: number | null;
+  snapshot: FinanceSnapshot;
   buddyLevel: number;
   buddyGear?: BuddyGear;
-  recentExpenses: Transaction[];
 }) {
+  const { survivalDays, savings, avgMonthlyExpense, monthlySurplus } = snapshot;
   const state = buddyState(survivalDays);
   const risk = state as BuddyRisk;
   const wealth = wealthFromSavings(savings);
+  const priority = buildPriorityMessage(snapshot);
 
   const shake =
     state === "danger"
@@ -86,11 +117,41 @@ export function SurvivalStatus({
 
   return (
     <div className="grid gap-5">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <MetricCard
+          label="生存可能日数"
+          value={survivalDays === null ? "—" : Number.isFinite(survivalDays) ? `${survivalDays}` : "∞"}
+          unit="日"
+          accent={state === "danger" ? "crimson" : "emerald"}
+          helper={riskLabel}
+        />
+        <MetricCard
+          label="今月の余力"
+          value={monthlySurplus === null ? "—" : `${Math.round(monthlySurplus).toLocaleString()}`}
+          unit="円"
+          accent={monthlySurplus !== null && monthlySurplus < 0 ? "crimson" : "emerald"}
+          helper={monthlySurplus === null ? "今月データ不足" : monthlySurplus < 0 ? "赤字" : "黒字"}
+        />
+        <MetricCard
+          label="総貯蓄"
+          value={`${Math.round(savings).toLocaleString()}`}
+          unit="円"
+          accent={savings < 0 ? "crimson" : "emerald"}
+          helper={savings < 0 ? "要改善" : "使える残高"}
+        />
+        <MetricCard
+          label="平均月間支出"
+          value={avgMonthlyExpense === null ? "—" : `${Math.round(avgMonthlyExpense).toLocaleString()}`}
+          unit="円"
+          helper={avgMonthlyExpense === null ? "直近90日不足" : "直近90日から推定"}
+        />
+      </div>
+
       <div className={`rounded-[28px] border border-white/10 bg-zinc-950 p-7 ${aura}`}>
         <div className="flex items-start justify-between gap-4">
           <div>
             <div className="text-[13px] font-semibold tracking-tight text-zinc-200">
-              支出
+              状況サマリー
             </div>
             <div className="mt-2 flex items-center gap-2 text-[13px] text-zinc-400">
               <span className={`font-semibold ${riskColor}`}>{riskLabel}</span>
@@ -125,27 +186,26 @@ export function SurvivalStatus({
               </span>
             </div>
 
-            <div className="mt-6 grid gap-3 sm:grid-cols-2">
-              <Metric
-                label="今月の余力"
-                value={
-                  monthlySurplus === null
-                    ? "—"
-                    : `${Math.round(monthlySurplus).toLocaleString()}`
-                }
-                unit="円"
-                accent={
-                  monthlySurplus !== null && monthlySurplus < 0
-                    ? "crimson"
-                    : "emerald"
-                }
-              />
-              <Metric
-                label="バディレベル"
-                value={`${buddyLevel}`}
-                unit="Lv"
-                accent={state === "danger" ? "crimson" : "emerald"}
-              />
+            <div className="mt-6 rounded-2xl border border-white/10 bg-black/30 p-4">
+              <div className="text-[12px] font-semibold text-zinc-500">次にやる1アクション</div>
+              <div className="mt-2 text-[15px] font-semibold text-zinc-50">{priority.title}</div>
+              <p className="mt-2 text-[13px] leading-6 text-zinc-400">{priority.body}</p>
+              <div
+                className={[
+                  "mt-3 inline-flex rounded-full px-2.5 py-1 text-[12px] font-semibold",
+                  priority.tone === "danger"
+                    ? "bg-(--app-crimson)/15 text-(--app-crimson)"
+                    : priority.tone === "warn"
+                      ? "bg-white/10 text-zinc-100"
+                      : "bg-(--app-emerald)/15 text-(--app-emerald)",
+                ].join(" ")}
+              >
+                {priority.tone === "danger"
+                  ? "最優先"
+                  : priority.tone === "warn"
+                    ? "優先度高"
+                    : "まずはここから"}
+              </div>
             </div>
           </div>
 
@@ -162,71 +222,21 @@ export function SurvivalStatus({
           </motion.div>
         </div>
       </div>
-
-      <div className="rounded-3xl border border-white/10 bg-zinc-950 p-6 shadow-sm shadow-black/30">
-        <div className="flex items-end justify-between gap-4">
-          <div>
-            <div className="text-sm font-semibold tracking-tight">
-              危機アラート
-            </div>
-            <div className="mt-2 text-[13px] text-zinc-400">
-              小さな支出でも寿命を削ります（“気づき”を短文で）。
-            </div>
-          </div>
-        </div>
-
-        <ul className="mt-5 grid gap-2">
-          {recentExpenses.length === 0 ? (
-            <li className="rounded-2xl border border-white/10 bg-black/40 px-4 py-3 text-[13px] text-zinc-400">
-              まだ支出ログがありません。
-            </li>
-          ) : (
-            recentExpenses.slice(0, 3).map((tx) => {
-              const hours = calcShrinkHours(tx.amount, avgMonthlyExpense);
-              const label = tx.note?.trim() ? tx.note.trim() : "支出";
-              const msg =
-                hours === null
-                  ? `「${label}」で寿命が削れました`
-                  : `「${label}」で寿命が ${hours} 時間縮まりました`;
-
-              return (
-                <li
-                  key={tx.id}
-                  className="rounded-2xl border border-white/10 bg-black/40 px-4 py-3"
-                >
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="min-w-0">
-                      <div className="text-[13px] font-medium text-[color:var(--app-crimson)]">
-                        {msg}
-                      </div>
-                      <div className="mt-1 text-[12px] text-zinc-500">
-                        {new Date(tx.created_at).toLocaleString()} / -
-                        {Math.round(tx.amount).toLocaleString()}円
-                      </div>
-                    </div>
-                    <div className="shrink-0 rounded-full border border-white/10 bg-[color:var(--app-crimson)]/15 px-2 py-1 text-[12px] font-semibold text-[color:var(--app-crimson)]">
-                      警告
-                    </div>
-                  </div>
-                </li>
-              );
-            })
-          )}
-        </ul>
-      </div>
     </div>
   );
 }
 
-function Metric({
+function MetricCard({
   label,
   value,
   unit,
+  helper,
   accent,
 }: {
   label: string;
   value: string;
   unit: string;
+  helper: string;
   accent?: "crimson" | "emerald";
 }) {
   const accentClass =
@@ -245,6 +255,7 @@ function Metric({
         </div>
         <div className="text-[12px] font-semibold text-zinc-500">{unit}</div>
       </div>
+      <div className="mt-2 text-[12px] text-zinc-500">{helper}</div>
     </div>
   );
 }

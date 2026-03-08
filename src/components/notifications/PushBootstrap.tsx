@@ -15,7 +15,9 @@ function base64UrlToUint8Array(base64Url: string) {
 }
 
 async function subscribeToPush(publicKey: string) {
-  const registration = await navigator.serviceWorker.register("/sw.js");
+  const registration =
+    (await navigator.serviceWorker.getRegistration()) ??
+    (await navigator.serviceWorker.register("/sw.js"));
   const existing = await registration.pushManager.getSubscription();
   if (existing) return existing;
 
@@ -47,7 +49,7 @@ export function PushBootstrap() {
         if (cancelled) return;
 
         if (permission !== "granted") {
-          const registration = await navigator.serviceWorker.getRegistration("/sw.js");
+          const registration = await navigator.serviceWorker.getRegistration();
           const existing = await registration?.pushManager.getSubscription();
           if (existing) {
             await fetch("/api/push/unsubscribe", {

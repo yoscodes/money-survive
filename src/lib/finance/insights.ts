@@ -39,10 +39,51 @@ export type FinanceSnapshot = {
   }>;
 };
 
+export const APP_TIME_ZONE = "Asia/Tokyo";
+
 function normalizeLabel(note: string | null) {
   const raw = note?.trim();
   if (!raw) return "メモなし";
   return raw.replace(/\s+/g, " ").slice(0, 80);
+}
+
+function datePartsInTimeZone(date: Date, timeZone: string) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+
+  const read = (type: "year" | "month" | "day") =>
+    Number(parts.find((part) => part.type === type)?.value ?? "0");
+
+  return {
+    year: read("year"),
+    month: read("month"),
+    day: read("day"),
+  };
+}
+
+export function monthKeyInTimeZone(date: Date, timeZone = APP_TIME_ZONE) {
+  const { year, month } = datePartsInTimeZone(date, timeZone);
+  return `${year}-${String(month).padStart(2, "0")}`;
+}
+
+export function formatMonthLabel(date: Date, timeZone = APP_TIME_ZONE) {
+  const { year, month } = datePartsInTimeZone(date, timeZone);
+  return `${year}年${month}月`;
+}
+
+export function filterCurrentMonthTransactions(
+  items: FinanceTransaction[],
+  now = new Date(),
+  timeZone = APP_TIME_ZONE,
+) {
+  const currentMonthKey = monthKeyInTimeZone(now, timeZone);
+  return items.filter(
+    (tx) => monthKeyInTimeZone(new Date(tx.created_at), timeZone) === currentMonthKey,
+  );
 }
 
 function calcSurvivalDays(savings: number, avgMonthlyExpense: number | null) {
@@ -65,17 +106,20 @@ function deriveSpendingTendency(items: FinanceTransaction[], now: Date): Spendin
   return "spiky";
 }
 
-export function buildFinanceSnapshot(items: FinanceTransaction[]): FinanceSnapshot {
-  const now = items.length ? new Date(items[0]!.created_at) : new Date();
+export function buildFinanceSnapshot(
+  items: FinanceTransaction[],
+  options?: { now?: Date; timeZone?: string },
+): FinanceSnapshot {
+  const now = options?.now ?? new Date();
+  const timeZone = options?.timeZone ?? APP_TIME_ZONE;
   const daysWindow = 90;
   const since90 = new Date(now.getTime() - daysWindow * 24 * 60 * 60 * 1000);
-  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
 
   const incomes = items.filter((tx) => tx.type === "income");
   const expenses = items.filter((tx) => tx.type === "expense");
   const in90 = items.filter((tx) => new Date(tx.created_at) >= since90);
   const expense90 = in90.filter((tx) => tx.type === "expense");
-  const monthItems = items.filter((tx) => new Date(tx.created_at) >= monthStart);
+  const monthItems = filterCurrentMonthTransactions(items, now, timeZone);
   const since30 = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
   const expense30 = expenses.filter((tx) => new Date(tx.created_at) >= since30);
 

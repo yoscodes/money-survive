@@ -9,42 +9,92 @@ import {
   type StoredPushSubscription,
 } from "@/lib/notifications/webpush";
 
-export type TxActionState = { error?: string | null };
+type TxFieldErrors = Partial<Record<"type" | "amount" | "note", string>>;
+type ParsedTransactionForm =
+  | {
+      value: {
+        type: "income" | "expense";
+        amount: number;
+        note: string | null;
+      };
+    }
+  | {
+      error: string;
+      fieldErrors: TxFieldErrors;
+    };
+
+export type TxActionState = {
+  error: string | null;
+  success: boolean;
+  fieldErrors?: TxFieldErrors;
+};
 
 function getString(formData: FormData, key: string) {
   const v = formData.get(key);
   return typeof v === "string" ? v : "";
 }
 
+function parseTransactionForm(formData: FormData): ParsedTransactionForm {
+  const type = getString(formData, "type");
+  const amountRaw = getString(formData, "amount");
+  const note = getString(formData, "note").trim();
+  const fieldErrors: TxFieldErrors = {};
+
+  if (type !== "income" && type !== "expense") {
+    fieldErrors.type = "種類を選択してください";
+  }
+
+  const amount = Number(amountRaw);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    fieldErrors.amount = "0より大きい金額を入力してください";
+  }
+
+  if (note.length > 80) {
+    fieldErrors.note = "メモは80文字以内で入力してください";
+  }
+
+  if (Object.keys(fieldErrors).length > 0) {
+    return {
+      error: "入力内容を確認してください",
+      fieldErrors,
+    };
+  }
+
+  const normalizedType = type as "income" | "expense";
+  return {
+    value: {
+      type: normalizedType,
+      amount,
+      note: note.length ? note : null,
+    },
+  };
+}
+
 export async function addTransaction(
   _prevState: TxActionState,
   formData: FormData,
 ): Promise<TxActionState> {
-  const type = getString(formData, "type");
-  const amountRaw = getString(formData, "amount");
-  const note = getString(formData, "note").trim();
-
-  if (type !== "income" && type !== "expense") return { error: "type が不正です" };
-
-  const amount = Number(amountRaw);
-  if (!Number.isFinite(amount) || amount <= 0) return { error: "金額を正しく入力してください" };
+  const parsed = parseTransactionForm(formData);
+  if ("error" in parsed) {
+    return { error: parsed.error, success: false, fieldErrors: parsed.fieldErrors };
+  }
 
   const supabase = await createSupabaseServer();
   const { data: userData } = await supabase.auth.getUser();
-  if (!userData.user) return { error: "ログインが必要です" };
+  if (!userData.user) return { error: "ログインが必要です", success: false, fieldErrors: {} };
 
   const { data: inserted, error } = await supabase
     .from("transactions")
     .insert({
       user_id: userData.user.id,
-      type,
-      amount,
-      note: note.length ? note : null,
+      type: parsed.value.type,
+      amount: parsed.value.amount,
+      note: parsed.value.note,
     })
     .select("id, created_at, type, amount, note")
     .single();
 
-  if (error) return { error: error.message };
+  if (error) return { error: error.message, success: false, fieldErrors: {} };
 
   try {
     await maybeSendImmediatePulse(userData.user.id, inserted as FinanceTransaction);
@@ -53,16 +103,62 @@ export async function addTransaction(
   }
 
   revalidatePath("/dashboard");
-  return { error: null };
+  return { error: null, success: true, fieldErrors: {} };
 }
 
-export async function deleteTransaction(id: string) {
+export async function updateTransaction(
+  _prevState: TxActionState,
+  formData: FormData,
+): Promise<TxActionState> {
+  const id = getString(formData, "id");
+  if (!id) return { error: "更新対象が見つかりません", success: false, fieldErrors: {} };
+
+  const parsed = parseTransactionForm(formData);
+  if ("error" in parsed) {
+    return { error: parsed.error, success: false, fieldErrors: parsed.fieldErrors };
+  }
+
   const supabase = await createSupabaseServer();
   const { data: userData } = await supabase.auth.getUser();
-  if (!userData.user) return;
+  if (!userData.user) return { error: "ログインが必要です", success: false, fieldErrors: {} };
 
-  await supabase.from("transactions").delete().eq("id", id);
+  const { error } = await supabase
+    .from("transactions")
+    .update({
+      type: parsed.value.type,
+      amount: parsed.value.amount,
+      note: parsed.value.note,
+    })
+    .eq("id", id)
+    .eq("user_id", userData.user.id);
+
+  if (error) return { error: error.message, success: false, fieldErrors: {} };
+
   revalidatePath("/dashboard");
+  return { error: null, success: true, fieldErrors: {} };
+}
+
+export async function deleteTransaction(
+  _prevState: TxActionState,
+  formData: FormData,
+): Promise<TxActionState> {
+  const id = getString(formData, "id");
+  if (!id) return { error: "削除対象が見つかりません", success: false, fieldErrors: {} };
+
+  const supabase = await createSupabaseServer();
+  const { data: userData } = await supabase.auth.getUser();
+  if (!userData.user) return { error: "ログインが必要です", success: false, fieldErrors: {} };
+
+  const { error } = await supabase
+    .from("transactions")
+    .delete()
+    .eq("id", id)
+    .eq("user_id", userData.user.id);
+
+  if (error) return { error: error.message, success: false, fieldErrors: {} };
+
+  revalidatePath("/dashboard");
+  return { error: null, success: true, fieldErrors: {} };
 }
 
 async function maybeSendImmediatePulse(userId: string, inserted: FinanceTransaction) {
