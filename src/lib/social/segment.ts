@@ -39,6 +39,32 @@ export type BattleFeedItem = {
   message: string;
   category: "poison" | "doping" | "shield";
   completedAt: string;
+  deltaDays: number;
+  reactionCount: number;
+};
+
+export type SegmentMapPoint = {
+  id: string;
+  label: string;
+  survivalDays: number;
+  monthlySurplus: number;
+  savings: number;
+  rank: number | null;
+  isSelf?: boolean;
+};
+
+export type SegmentMapView = {
+  id: string;
+  label: string;
+  description: string;
+  points: SegmentMapPoint[];
+  avgSurvivalDays: number | null;
+  avgMonthlySurplus: number | null;
+  hiddenCount: number;
+  ctaHref: string;
+  ctaLabel: string;
+  topQuestTitle?: string | null;
+  isProjection?: boolean;
 };
 
 export function isAgeGroup(value: string): value is AgeGroup {
@@ -49,8 +75,23 @@ export function isIncomeBand(value: string): value is IncomeBand {
   return INCOME_BANDS.includes(value as IncomeBand);
 }
 
+export function nextIncomeBand(value: IncomeBand): IncomeBand | null {
+  const index = INCOME_BANDS.indexOf(value);
+  if (index < 0 || index >= INCOME_BANDS.length - 1) return null;
+  return INCOME_BANDS[index + 1] ?? null;
+}
+
 export function segmentLabel(profile: Pick<UserProfile, "age_group" | "income_band">) {
   return `${profile.age_group}・年収${profile.income_band}`;
+}
+
+export function segmentChannelKey(
+  ageGroup: AgeGroup,
+  incomeBand: IncomeBand,
+) {
+  const ageIndex = AGE_GROUPS.indexOf(ageGroup);
+  const incomeIndex = INCOME_BANDS.indexOf(incomeBand);
+  return `segment:${Math.max(ageIndex, 0)}:${Math.max(incomeIndex, 0)}`;
 }
 
 function asQuestReward(value: unknown): QuestReward {
@@ -71,6 +112,41 @@ function gearText(category: string, reward: QuestReward, title: string) {
   return `${title}を完了しました`;
 }
 
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function seedFromString(value: string) {
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash * 31 + value.charCodeAt(i)) >>> 0;
+  }
+  return hash;
+}
+
+function estimateQuestDeltaDays(row: {
+  category: string;
+  reward: QuestReward;
+  recommended_cut_fixed?: number | null;
+  recommended_boost_income?: number | null;
+}) {
+  if (row.reward.shield === "ironwall") return 9;
+  if (row.reward.shield === "basic") return 6;
+  if (row.reward.armor) return 5;
+
+  const recommended = Math.max(
+    row.recommended_cut_fixed ?? 0,
+    row.recommended_boost_income ?? 0,
+  );
+  if (recommended > 0) {
+    return clamp(Math.round(recommended / 3000), 2, 12);
+  }
+
+  if (row.category === "poison") return 4;
+  if (row.category === "doping") return 6;
+  return 5;
+}
+
 export function createBattleFeedItem(row: {
   id: string;
   title: string;
@@ -79,8 +155,16 @@ export function createBattleFeedItem(row: {
   reward: unknown;
   age_group: AgeGroup;
   income_band: IncomeBand;
+  recommended_cut_fixed?: number | null;
+  recommended_boost_income?: number | null;
 }): BattleFeedItem {
   const reward = asQuestReward(row.reward);
+  const deltaDays = estimateQuestDeltaDays({
+    category: row.category,
+    reward,
+    recommended_cut_fixed: row.recommended_cut_fixed,
+    recommended_boost_income: row.recommended_boost_income,
+  });
   return {
     id: row.id,
     category:
@@ -88,11 +172,33 @@ export function createBattleFeedItem(row: {
         ? row.category
         : "shield",
     completedAt: row.completed_at ?? new Date().toISOString(),
+    deltaDays,
+    reactionCount: (seedFromString(row.id) % 6) + 2,
     message: `同じ${row.age_group}・年収${row.income_band}の誰かが、今、${gearText(
       row.category,
       reward,
       row.title,
     )}。`,
+  };
+}
+
+export function createBattleFeedItemFromEvent(row: {
+  id: string;
+  message: string;
+  category: string;
+  completed_at: string | null;
+  delta_days?: number | null;
+}): BattleFeedItem {
+  return {
+    id: row.id,
+    message: row.message,
+    category:
+      row.category === "poison" || row.category === "doping" || row.category === "shield"
+        ? row.category
+        : "shield",
+    completedAt: row.completed_at ?? new Date().toISOString(),
+    deltaDays: row.delta_days ?? 4,
+    reactionCount: (seedFromString(row.id) % 6) + 2,
   };
 }
 

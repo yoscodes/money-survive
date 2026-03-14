@@ -1,4 +1,5 @@
-import type { FinanceSnapshot } from "@/lib/finance/insights";
+import Link from "next/link";
+import { estimateRecoveredDays, type FinanceSnapshot } from "@/lib/finance/insights";
 
 function formatCurrency(value: number) {
   return `${Math.round(value).toLocaleString()}円`;
@@ -31,14 +32,30 @@ function tendencyCopy(tendency: FinanceSnapshot["spendingTendency"]) {
 
 export function CauseInsights({ snapshot }: { snapshot: FinanceSnapshot }) {
   const tendency = tendencyCopy(snapshot.spendingTendency);
+  const topRecurring = snapshot.heavyRecurringExpenses[0] ?? snapshot.recurringExpenseCandidates[0] ?? null;
+  const topUnexpected = snapshot.unusualExpenseItems[0] ?? null;
+  const culprit =
+    topUnexpected
+      ? {
+          title: `予定外支出「${topUnexpected.label}」`,
+          body: `${formatCurrency(topUnexpected.amount)}の単発支出が直近で強く効いています。平均より大きい出費として優先度が高いです。`,
+          delta: estimateRecoveredDays(topUnexpected.amount, snapshot.avgMonthlyExpense),
+        }
+      : topRecurring
+        ? {
+            title: `重い固定費「${topRecurring.label}」`,
+            body: `${topRecurring.count}回・平均${formatCurrency(topRecurring.averageAmount)}の支出です。毎月効くぶん、家計への圧力が大きいです。`,
+            delta: estimateRecoveredDays(topRecurring.averageAmount, snapshot.avgMonthlyExpense),
+          }
+        : null;
 
   return (
     <div className="rounded-3xl border border-white/10 bg-zinc-950 p-6 shadow-sm shadow-black/30">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <div className="text-sm font-semibold tracking-tight">原因分析</div>
+          <div className="text-sm font-semibold tracking-tight">Cause</div>
           <div className="mt-2 text-[13px] leading-6 text-zinc-400">
-            今の家計を削っている主因を、固定費・小口支出・高額支出の3方向から見ます。
+            生存日数を削っている犯人を、予定外支出・重い固定費・小口支出の順で洗い出します。
           </div>
         </div>
         <div className="rounded-full border border-white/10 bg-black/40 px-3 py-1 text-[12px] text-zinc-300">
@@ -47,16 +64,46 @@ export function CauseInsights({ snapshot }: { snapshot: FinanceSnapshot }) {
       </div>
 
       <div className="mt-5 rounded-2xl border border-white/10 bg-black/30 px-4 py-4">
-        <div className="text-[12px] font-semibold text-zinc-500">いまの傾向</div>
-        <div className="mt-2 text-[14px] font-semibold text-zinc-100">{tendency.label}</div>
-        <p className="mt-2 text-[13px] leading-6 text-zinc-400">{tendency.body}</p>
+        <div className="text-[12px] font-semibold text-zinc-500">いまの犯人</div>
+        {culprit ? (
+          <>
+            <div className="mt-2 text-[14px] font-semibold text-zinc-100">{culprit.title}</div>
+            <p className="mt-2 text-[13px] leading-6 text-zinc-400">{culprit.body}</p>
+            {culprit.delta ? (
+              <div className="mt-3 text-[13px] font-semibold text-(--app-crimson)">
+                放置コスト: 推定 {culprit.delta}日分
+              </div>
+            ) : null}
+          </>
+        ) : (
+          <>
+            <div className="mt-2 text-[14px] font-semibold text-zinc-100">{tendency.label}</div>
+            <p className="mt-2 text-[13px] leading-6 text-zinc-400">{tendency.body}</p>
+          </>
+        )}
       </div>
 
       <div className="mt-5 grid gap-4 xl:grid-cols-3">
         <InsightList
-          title="固定費候補"
-          empty="繰り返し支出の候補はまだ少なめです。"
-          items={snapshot.recurringExpenseCandidates.slice(0, 3).map((item) => ({
+          title="予定外の犯人"
+          empty="単発で大きすぎる支出はまだ目立っていません。"
+          items={snapshot.unusualExpenseItems.slice(0, 3).map((item) => ({
+            key: `${item.label}:${item.createdAt}`,
+            title: item.label,
+            meta: `${formatCurrency(item.amount)} / ${
+              item.ratioToAverage ? `平均の${item.ratioToAverage}倍` : new Date(item.createdAt).toLocaleDateString("ja-JP")
+            }`,
+          }))}
+        />
+        <InsightList
+          title="重い固定費"
+          empty="重い固定費候補はまだ少なめです。"
+          items={(snapshot.heavyRecurringExpenses.length > 0
+            ? snapshot.heavyRecurringExpenses
+            : snapshot.recurringExpenseCandidates
+          )
+            .slice(0, 3)
+            .map((item) => ({
             key: `${item.label}:${item.latestAt}`,
             title: item.label,
             meta: `${item.count}回 / 平均 ${formatCurrency(item.averageAmount)}`,
@@ -80,6 +127,14 @@ export function CauseInsights({ snapshot }: { snapshot: FinanceSnapshot }) {
             meta: `${formatCurrency(item.amount)} / ${new Date(item.createdAt).toLocaleDateString("ja-JP")}`,
           }))}
         />
+      </div>
+      <div className="mt-5 flex justify-end">
+        <Link
+          href="/quests"
+          className="inline-flex rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-[13px] font-semibold text-zinc-100 hover:border-white/20"
+        >
+          対策クエストを見る →
+        </Link>
       </div>
     </div>
   );

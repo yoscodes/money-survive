@@ -57,12 +57,12 @@ export function AiTriggerSection({
   }, [router, state.success]);
 
   return (
-    <div className="rounded-3xl border border-white/10 bg-black/30 p-6">
+    <div className="rounded-3xl border border-white/10 bg-[radial-gradient(circle_at_top_left,rgba(255,255,255,0.1),rgba(0,0,0,0.85)_55%)] p-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div>
-          <div className="text-[12px] font-semibold text-zinc-500">あなた専用の攻略本</div>
+          <div className="text-[12px] font-semibold text-zinc-500">バディからの密書</div>
           <div className="mt-2 text-sm font-semibold tracking-tight text-zinc-100">
-            AIが「明日からできる3つのトリガー」を提案
+            AIが「明日からできる3つの内緒の提案」を渡す
           </div>
           <p className="mt-2 max-w-2xl text-[13px] leading-6 text-zinc-400">{guidance}</p>
         </div>
@@ -103,7 +103,10 @@ export function AiTriggerSection({
           </div>
         ) : (
           items.map((item) => (
-            <div key={item.id} className="rounded-3xl border border-white/10 bg-zinc-950 p-5">
+            <div
+              key={item.id}
+              className="rounded-3xl border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.08),rgba(24,24,27,0.98))] p-5"
+            >
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">

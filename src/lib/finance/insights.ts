@@ -37,6 +37,16 @@ export type FinanceSnapshot = {
     amount: number;
     createdAt: string;
   }>;
+  unusualExpenseItems: Array<{
+    label: string;
+    amount: number;
+    createdAt: string;
+    ratioToAverage: number | null;
+  }>;
+  heavyRecurringExpenses: ExpensePattern[];
+  lastTransactionAt: string | null;
+  hoursSinceLastTransaction: number | null;
+  buddyStamina: number | null;
 };
 
 export const APP_TIME_ZONE = "Asia/Tokyo";
@@ -84,6 +94,47 @@ export function filterCurrentMonthTransactions(
   return items.filter(
     (tx) => monthKeyInTimeZone(new Date(tx.created_at), timeZone) === currentMonthKey,
   );
+}
+
+export function formatElapsedSince(date: Date, now = new Date()) {
+  const diffMs = Math.max(0, now.getTime() - date.getTime());
+  const minutes = Math.floor(diffMs / (60 * 1000));
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+
+  if (days >= 1) return `${days}日`;
+  if (hours >= 1) return `${hours}時間`;
+  return `${Math.max(1, minutes)}分`;
+}
+
+export function formatLifetimeLoss(
+  amount: number,
+  avgMonthlyExpense: number | null,
+) {
+  if (!avgMonthlyExpense || avgMonthlyExpense <= 0) return null;
+  const daily = avgMonthlyExpense / 30;
+  const totalMinutes = Math.round((amount / daily) * 24 * 60);
+  if (!Number.isFinite(totalMinutes) || totalMinutes <= 0) return null;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours > 0 && minutes > 0) return `${hours}時間${minutes}分`;
+  if (hours > 0) return `${hours}時間`;
+  return `${minutes}分`;
+}
+
+export function estimateRecoveredDays(
+  monthlyDelta: number,
+  avgMonthlyExpense: number | null,
+) {
+  if (!avgMonthlyExpense || avgMonthlyExpense <= 0 || monthlyDelta <= 0) return null;
+  const days = Math.round((monthlyDelta / avgMonthlyExpense) * 30);
+  return Math.max(1, days);
+}
+
+function buddyStaminaFromHours(hoursSinceLastTransaction: number | null) {
+  if (hoursSinceLastTransaction === null) return null;
+  const percent = Math.round(100 - (Math.min(hoursSinceLastTransaction, 72) / 72) * 100);
+  return Math.max(0, Math.min(100, percent));
 }
 
 function calcSurvivalDays(savings: number, avgMonthlyExpense: number | null) {
@@ -167,6 +218,19 @@ export function buildFinanceSnapshot(
     .filter((item) => item.count >= 2 && item.averageAmount >= 1500)
     .sort((a, b) => b.count - a.count || b.averageAmount - a.averageAmount)
     .slice(0, 5);
+  const recurringAverage =
+    recurringExpenseCandidates.length > 0
+      ? recurringExpenseCandidates.reduce((sum, item) => sum + item.averageAmount, 0) /
+        recurringExpenseCandidates.length
+      : null;
+  const heavyRecurringExpenses = recurringExpenseCandidates
+    .filter(
+      (item) =>
+        recurringAverage !== null &&
+        item.averageAmount >= Math.max(3000, Math.round(recurringAverage * 1.15)),
+    )
+    .sort((a, b) => b.averageAmount - a.averageAmount || b.count - a.count)
+    .slice(0, 5);
 
   const smallExpenseHotspots = grouped
     .filter((item) => item.count >= 2 && item.averageAmount < 2500)
@@ -187,6 +251,34 @@ export function buildFinanceSnapshot(
     amount: Math.round(tx.amount),
     createdAt: tx.created_at,
   }));
+  const expenseAverage =
+    expenses.length > 0
+      ? expenses.reduce((sum, tx) => sum + tx.amount, 0) / expenses.length
+      : null;
+  const labelCounts = new Map(grouped.map((item) => [item.label, item.count]));
+  const unusualExpenseItems = [...expenses]
+    .filter((tx) => {
+      const label = normalizeLabel(tx.note);
+      const count = labelCounts.get(label) ?? 0;
+      const ratio = expenseAverage && expenseAverage > 0 ? tx.amount / expenseAverage : null;
+      return count <= 1 && (ratio === null ? tx.amount >= 10000 : ratio >= 1.8);
+    })
+    .sort((a, b) => b.amount - a.amount)
+    .slice(0, 5)
+    .map((tx) => ({
+      label: normalizeLabel(tx.note),
+      amount: Math.round(tx.amount),
+      createdAt: tx.created_at,
+      ratioToAverage:
+        expenseAverage && expenseAverage > 0
+          ? Number((tx.amount / expenseAverage).toFixed(1))
+          : null,
+    }));
+  const lastTransactionAt = items[0]?.created_at ?? null;
+  const hoursSinceLastTransaction = lastTransactionAt
+    ? Math.max(0, Math.floor((now.getTime() - new Date(lastTransactionAt).getTime()) / (60 * 60 * 1000)))
+    : null;
+  const buddyStamina = buddyStaminaFromHours(hoursSinceLastTransaction);
 
   return {
     transactionCount: items.length,
@@ -199,8 +291,13 @@ export function buildFinanceSnapshot(
     survivalDays,
     spendingTendency: deriveSpendingTendency(items, now),
     recurringExpenseCandidates,
+    heavyRecurringExpenses,
     smallExpenseHotspots,
     highExpenseItems,
     recentExpenses,
+    unusualExpenseItems,
+    lastTransactionAt,
+    hoursSinceLastTransaction,
+    buddyStamina,
   };
 }

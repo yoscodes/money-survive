@@ -5,6 +5,15 @@ type UnsubscribeBody = {
   endpoint?: string;
 };
 
+function isPushSetupError(message: string) {
+  return (
+    message.includes("push_subscriptions") ||
+    message.includes("relation") ||
+    message.includes("schema cache") ||
+    message.includes("permission denied")
+  );
+}
+
 export async function POST(request: Request) {
   const supabase = await createSupabaseServer();
   const { data: userData } = await supabase.auth.getUser();
@@ -25,6 +34,16 @@ export async function POST(request: Request) {
     .eq("endpoint", endpoint);
 
   if (error) {
+    if (isPushSetupError(error.message)) {
+      return NextResponse.json(
+        {
+          ok: false,
+          disabled: true,
+          reason: "push_subscriptions table is not ready",
+        },
+        { status: 200 },
+      );
+    }
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 

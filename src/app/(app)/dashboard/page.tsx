@@ -1,17 +1,12 @@
-import { Suspense } from "react";
 import { createSupabaseServer } from "@/lib/supabase/server";
 import { AddTransactionCard, TransactionList } from "./ui";
 import { SurvivalStatus } from "./SurvivalStatus";
-import { BuddyRoastCard } from "./BuddyRoastCard";
 import { CauseInsights } from "./CauseInsights";
-import { MonthlyBuddyRoastSection } from "./MonthlyBuddyRoastSection";
 import type { Transaction } from "./types";
 import type { BuddyGear } from "@/components/buddy/BuddyAvatar";
 import type { QuestReward } from "@/lib/quests/templates";
 import {
   buildFinanceSnapshot,
-  filterCurrentMonthTransactions,
-  formatMonthLabel,
 } from "@/lib/finance/insights";
 
 function asQuestReward(value: unknown): QuestReward {
@@ -38,29 +33,6 @@ export default async function DashboardPage() {
 
   const items = (data ?? []) as Transaction[];
   const snapshot = buildFinanceSnapshot(items, { now });
-  const buddyLevel = Math.max(
-    1,
-    Math.min(99, 1 + Math.floor(Math.max(0, snapshot.savings) / 50_000)),
-  );
-
-  const monthItems = filterCurrentMonthTransactions(items, now);
-  const monthExpenses = monthItems
-    .filter((tx) => tx.type === "expense")
-    .slice(0, 8)
-    .map((tx) => ({
-      label: tx.note?.trim() ? tx.note.trim() : "支出",
-      amount: tx.amount,
-      createdAt: tx.created_at,
-    }));
-  const monthIncomes = monthItems
-    .filter((tx) => tx.type === "income")
-    .slice(0, 5)
-    .map((tx) => ({
-      label: tx.note?.trim() ? tx.note.trim() : "収入",
-      amount: tx.amount,
-      createdAt: tx.created_at,
-    }));
-  const monthLabel = formatMonthLabel(now);
 
   let buddyGear: BuddyGear | undefined = undefined;
   if (user?.id) {
@@ -103,28 +75,20 @@ export default async function DashboardPage() {
         <>
           <SurvivalStatus
             snapshot={snapshot}
-            buddyLevel={buddyLevel}
             buddyGear={buddyGear}
           />
 
-          <div className="grid gap-5 xl:grid-cols-[minmax(0,1.4fr)_minmax(320px,0.8fr)]">
-            <CauseInsights snapshot={snapshot} />
-            <Suspense fallback={<BuddyRoastCard roast={null} monthLabel={monthLabel} loading />}>
-              <MonthlyBuddyRoastSection
-                monthLabel={monthLabel}
-                savings={snapshot.savings}
-                monthlySurplus={snapshot.monthlySurplus}
-                avgMonthlyExpense={snapshot.avgMonthlyExpense}
-                survivalDays={snapshot.survivalDays}
-                expenses={monthExpenses}
-                incomes={monthIncomes}
-              />
-            </Suspense>
-          </div>
+          <CauseInsights snapshot={snapshot} />
 
-          <div className="grid gap-5 xl:grid-cols-[360px_minmax(0,1fr)]">
-            <AddTransactionCard />
-            <TransactionList items={items} />
+          <div className="rounded-3xl border border-white/10 bg-black/30 p-6 shadow-sm shadow-black/30">
+            <div className="text-sm font-semibold tracking-tight">Log</div>
+            <div className="mt-2 text-[13px] leading-6 text-zinc-400">
+              いま記録して、直近の収支だけを短く振り返ります。
+            </div>
+            <div className="mt-5 grid gap-5 xl:grid-cols-[360px_minmax(0,1fr)]">
+              <AddTransactionCard hasTransactions={items.length > 0} />
+              <TransactionList items={items} avgMonthlyExpense={snapshot.avgMonthlyExpense} />
+            </div>
           </div>
         </>
       )}

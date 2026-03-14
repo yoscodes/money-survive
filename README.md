@@ -34,6 +34,8 @@ NEXT_PUBLIC_VAPID_PUBLIC_KEY=...
 VAPID_PRIVATE_KEY=...
 VAPID_SUBJECT=mailto:you@example.com
 CRON_SECRET=...
+RESEND_API_KEY=...
+RESEND_FROM_EMAIL=onboarding@resend.dev
 NEXT_PUBLIC_FP_BOOKING_URL=...
 ADMIN_EMAIL=...
 ```
@@ -247,6 +249,20 @@ using (
 Web Push 通知を送るために必要です。
 
 ```sql
+create table if not exists public.push_subscriptions (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  user_email text,
+  endpoint text not null unique,
+  p256dh text not null,
+  auth text not null,
+  user_agent text,
+  last_seen_at timestamptz not null default now(),
+  disabled_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+alter table public.push_subscriptions enable row level security;
 
 create policy "push_subscriptions_select_own"
 on public.push_subscriptions
@@ -266,22 +282,7 @@ with check (auth.uid() = user_id);
 
 create policy "push_subscriptions_delete_own"
 on public.push_subscriptions
-for deletecreate table if not exists public.push_subscriptions (
-  id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references auth.users(id) on delete cascade,
-  user_email text,
-  endpoint text not null unique,
-  p256dh text not null,
-  auth text not null,
-  user_agent text,
-  last_seen_at timestamptz not null default now(),
-  disabled_at timestamptz,
-  created_at timestamptz not null default now()
-);
-
-alter table public.push_subscriptions enable row level security;
-
-create policy "push_subscrip
+for delete
 using (auth.uid() = user_id);
 ```
 
@@ -327,6 +328,12 @@ with check (auth.uid() = user_id);
 
 ```bash
 curl -X POST "http://localhost:3000/api/cron/weekly-report" \
+  -H "Authorization: Bearer $CRON_SECRET"
+
+curl -X POST "http://localhost:3000/api/cron/monthly-report" \
+  -H "Authorization: Bearer $CRON_SECRET"
+
+curl -X POST "http://localhost:3000/api/cron/liveness-pulse" \
   -H "Authorization: Bearer $CRON_SECRET"
 ```
 
@@ -476,10 +483,54 @@ grant execute on function public.get_segment_benchmark(uuid, text, text) to auth
 
 ### 12) Realtime（戦友フィード）を有効化
 
-`/map` の戦友フィードは `user_quests` の `completed` 更新を Supabase Realtime で監視します。
+`/map` の戦友フィードは、`user_quests` を全件監視する代わりに、
+セグメント別の配信用テーブル `map_segment_events` を購読します。
+クエスト達成時にサーバー側でこのテーブルへ 1 件追加され、クライアントは自分の
+セグメントだけを Realtime で受け取ります。
 
 ```sql
-alter publication supabase_realtime add table public.user_quests;
+create table if not exists public.map_segment_events (
+  id uuid primary key default gen_random_uuid(),
+  segment_key text not null,
+  age_group text not null check (age_group in ('20代', '30代', '40代', '50代', '60代+')),
+  income_band text not null check (income_band in ('300万層', '400万層', '500万層', '600万層', '700万層+')),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  quest_id uuid not null references public.user_quests(id) on delete cascade,
+  title text not null,
+  message text not null,
+  category text not null check (category in ('poison', 'doping', 'shield')),
+  reward jsonb not null default '{}'::jsonb,
+  delta_days integer not null default 0,
+  recommended_cut_fixed integer,
+  recommended_boost_income integer,
+  completed_at timestamptz not null,
+  created_at timestamptz not null default now(),
+  unique (quest_id)
+);
+
+create index if not exists map_segment_events_segment_key_completed_at_idx
+  on public.map_segment_events (segment_key, completed_at desc);
+
+create index if not exists map_segment_events_user_id_idx
+  on public.map_segment_events (user_id);
+
+alter table public.map_segment_events enable row level security;
+
+create policy "map_segment_events_select_same_segment"
+on public.map_segment_events
+for select
+to authenticated
+using (
+  exists (
+    select 1
+    from public.user_profiles up
+    where up.user_id = auth.uid()
+      and up.age_group = map_segment_events.age_group
+      and up.income_band = map_segment_events.income_band
+  )
+);
+
+alter publication supabase_realtime add table public.map_segment_events;
 ```
 
 すでに追加済みでエラーになる場合は、そのままで大丈夫です。
@@ -657,7 +708,7 @@ npm run dev
 - トリガー: `/triggers`
 - クエスト: `/quests`
 - AI家計診断: `/quests` の「あなた専用の攻略本」
-- Pulse通知: ログイン後に Push 登録、`/api/cron/weekly-report` で週次レポート
+- Pulse通知: ログイン後に Push 登録、`/api/cron/weekly-report` と `/api/cron/monthly-report` でレポート、`/api/cron/liveness-pulse` で生存確認
 - Social Proof: 新規登録時のプロフィール保存 + `/map` の匿名セグメント比較
 - Exit Strategy: `/triggers` と `/quests` の提携リンク、FP相談導線
 - 管理画面: `/admin/solution-links` で提携リンクをノーコード更新

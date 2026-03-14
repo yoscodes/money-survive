@@ -1,10 +1,11 @@
 import Link from "next/link";
 import { createSupabaseServer } from "@/lib/supabase/server";
 import { QUEST_TEMPLATES, type QuestReward, type QuestTemplate } from "@/lib/quests/templates";
-import { startQuest } from "@/app/(app)/quests/actions";
+import { startAiTriggerQuest, startQuest } from "@/app/(app)/quests/actions";
 import { AiTriggerSection } from "./AiTriggerSection";
 import {
   buildFinanceSnapshot,
+  estimateRecoveredDays,
   type FinanceTransaction,
 } from "@/lib/finance/insights";
 import {
@@ -25,9 +26,9 @@ type UserQuestRow = {
   completed_at: string | null;
   reward: unknown;
   ai_trigger_id: string | null;
+  recommended_cut_fixed: number | null;
+  recommended_boost_income: number | null;
 };
-
-type Tab = "board" | "active" | "completed";
 
 type AiTriggerViewRow = {
   id: string;
@@ -68,26 +69,16 @@ function categoryLabel(category: string) {
   return "クエスト";
 }
 
-export default async function QuestsPage({
-  searchParams,
-}: {
-  searchParams?: Record<string, string | string[] | undefined>;
-}) {
-  const tab = (
-    searchParams?.tab === "active"
-      ? "active"
-      : searchParams?.tab === "completed"
-        ? "completed"
-        : "board"
-  ) as Tab;
-
+export default async function QuestsPage() {
   const supabase = await createSupabaseServer();
   const { data: userData } = await supabase.auth.getUser();
 
   const user = userData.user;
   const { data, error } = await supabase
     .from("user_quests")
-    .select("id, template_key, title, category, status, started_at, completed_at, reward, ai_trigger_id")
+    .select(
+      "id, template_key, title, category, status, started_at, completed_at, reward, ai_trigger_id, recommended_cut_fixed, recommended_boost_income",
+    )
     .eq("user_id", user?.id ?? "")
     .in("status", ["active", "completed"])
     .order("started_at", { ascending: false })
@@ -203,6 +194,15 @@ export default async function QuestsPage({
     }),
   ].slice(0, 3);
   const fpLink = pickFpLink(solutionLinks);
+  const latestHistory = completed.slice(0, 8);
+  const hero = pickHero({
+    active,
+    aiItems,
+    templates,
+    activeByKey,
+    completedByKey,
+    avgMonthlyExpense: financeSnapshot.avgMonthlyExpense,
+  });
 
   return (
     <div className="grid gap-5">
@@ -211,32 +211,8 @@ export default async function QuestsPage({
           <div>
             <div className="text-sm font-semibold tracking-tight">クエストボード</div>
             <p className="mt-2 text-[13px] leading-6 text-zinc-400">
-              すべての行動項目を一覧で管理し、達成の証（装備/レベル）で達成感を強調します。
+              今やるべき1件から、進行中、最近の戦績までをこの1画面で管理します。
             </p>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <Link
-              href="/quests"
-              data-active={tab === "board"}
-              className="rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-[13px] font-semibold text-zinc-100 hover:border-white/20 data-[active=true]:bg-white/10"
-            >
-              ボード
-            </Link>
-            <Link
-              href="/quests?tab=active"
-              data-active={tab === "active"}
-              className="rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-[13px] font-semibold text-zinc-100 hover:border-white/20 data-[active=true]:bg-white/10"
-            >
-              進行中
-            </Link>
-            <Link
-              href="/quests?tab=completed"
-              data-active={tab === "completed"}
-              className="rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-[13px] font-semibold text-zinc-100 hover:border-white/20 data-[active=true]:bg-white/10"
-            >
-              達成
-            </Link>
           </div>
         </div>
 
@@ -248,8 +224,6 @@ export default async function QuestsPage({
                 {error.message}
               </pre>
             </div>
-          ) : tab !== "board" ? (
-            <ListView items={tab === "active" ? active : completed} />
           ) : (
             <div className="grid gap-5">
               <div className="grid gap-3 sm:grid-cols-3">
@@ -257,6 +231,8 @@ export default async function QuestsPage({
                 <StatCard label="進行中" value={`${activeCount}`} />
                 <StatCard label="レベル" value={`Lv.${level}`} />
               </div>
+
+              <HeroCard hero={hero} />
 
               <AiTriggerSection
                 items={aiItems}
@@ -322,10 +298,27 @@ export default async function QuestsPage({
                     まずは“証明”を提出して装備を獲得
                   </div>
                   <div className="mt-4">
-                    <ListView items={active} />
+                    <ProgressListView items={active} />
                   </div>
                 </div>
               ) : null}
+
+              <div className="rounded-3xl border border-white/10 bg-black/30 p-6">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <div className="text-[12px] font-semibold text-zinc-500">最近の戦績</div>
+                    <div className="mt-2 text-sm font-semibold tracking-tight text-zinc-100">
+                      達成の証をここに積み上げる
+                    </div>
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-zinc-950 px-4 py-3 text-[12px] text-zinc-400">
+                    最新 {latestHistory.length} 件
+                  </div>
+                </div>
+                <div className="mt-4 max-h-[320px] overflow-y-auto pr-1">
+                  <HistoryListView items={latestHistory} />
+                </div>
+              </div>
 
               <div className="rounded-3xl border border-white/10 bg-black/30 p-6">
                 <div className="text-[12px] font-semibold text-zinc-500">
@@ -464,7 +457,104 @@ function StatCard({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ListView({ items }: { items: UserQuestRow[] }) {
+type Hero =
+  | {
+      kind: "active";
+      title: string;
+      description: string;
+      categoryLabel: string;
+      deltaLabel: string;
+      href: string;
+      ctaLabel: string;
+      eyebrow: string;
+    }
+  | {
+      kind: "ai";
+      id: string;
+      title: string;
+      description: string;
+      categoryLabel: string;
+      deltaLabel: string;
+      linkedQuestId: string | null;
+      eyebrow: string;
+    }
+  | {
+      kind: "template";
+      templateKey: string;
+      title: string;
+      description: string;
+      categoryLabel: string;
+      deltaLabel: string;
+      eyebrow: string;
+    }
+  | null;
+
+function HeroCard({ hero }: { hero: Hero }) {
+  if (!hero) return null;
+
+  return (
+    <div className="rounded-3xl border border-white/10 bg-[radial-gradient(circle_at_top_left,rgba(16,185,129,0.2),rgba(10,10,10,0.88)_55%)] p-6 shadow-sm shadow-black/30">
+      <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+        <div className="max-w-2xl">
+          <div className="text-[12px] font-semibold text-zinc-400">{hero.eyebrow}</div>
+          <div className="mt-2 text-2xl font-semibold tracking-tight text-zinc-50">
+            バディの寿命を今日中に伸ばすなら、これだ。
+          </div>
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-[12px]">
+            <span className="rounded-full border border-white/10 bg-black/30 px-2 py-1 font-semibold text-zinc-200">
+              {hero.categoryLabel}
+            </span>
+            <span className="rounded-full border border-white/10 bg-(--app-emerald)/15 px-2 py-1 font-semibold text-(--app-emerald)">
+              {hero.deltaLabel}
+            </span>
+          </div>
+          <div className="mt-4 text-lg font-semibold tracking-tight text-zinc-100">{hero.title}</div>
+          <p className="mt-2 text-[13px] leading-6 text-zinc-300">{hero.description}</p>
+        </div>
+
+        <div className="w-full max-w-sm">
+          {hero.kind === "active" ? (
+            <Link
+              href={hero.href}
+              className="inline-flex h-11 w-full items-center justify-center rounded-xl border border-white/10 bg-white/10 px-4 text-[15px] font-medium text-zinc-100 shadow-sm shadow-black/20 hover:border-white/20"
+            >
+              {hero.ctaLabel}
+            </Link>
+          ) : hero.kind === "ai" ? (
+            hero.linkedQuestId ? (
+              <Link
+                href={`/quests/${hero.linkedQuestId}`}
+                className="inline-flex h-11 w-full items-center justify-center rounded-xl border border-white/10 bg-white/10 px-4 text-[15px] font-medium text-zinc-100 shadow-sm shadow-black/20 hover:border-white/20"
+              >
+                密書のクエストを開く
+              </Link>
+            ) : (
+              <form action={startAiTriggerQuest.bind(null, hero.id)}>
+                <button
+                  type="submit"
+                  className="inline-flex h-11 w-full items-center justify-center rounded-xl border border-white/10 bg-white/10 px-4 text-[15px] font-medium text-zinc-100 shadow-sm shadow-black/20 hover:border-white/20"
+                >
+                  密書の提案で始める
+                </button>
+              </form>
+            )
+          ) : (
+            <form action={startQuest.bind(null, hero.templateKey)}>
+              <button
+                type="submit"
+                className="inline-flex h-11 w-full items-center justify-center rounded-xl border border-white/10 bg-white/10 px-4 text-[15px] font-medium text-zinc-100 shadow-sm shadow-black/20 hover:border-white/20"
+              >
+                いますぐ始める
+              </button>
+            </form>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ProgressListView({ items }: { items: UserQuestRow[] }) {
   if (items.length === 0) {
     return (
       <div className="rounded-3xl border border-white/10 bg-black/30 p-5 text-[13px] text-zinc-400">
@@ -514,5 +604,144 @@ function ListView({ items }: { items: UserQuestRow[] }) {
       ))}
     </ul>
   );
+}
+
+function HistoryListView({ items }: { items: UserQuestRow[] }) {
+  if (items.length === 0) {
+    return (
+      <div className="rounded-3xl border border-white/10 bg-zinc-950 p-5 text-[13px] text-zinc-400">
+        まだ達成したクエストはありません。
+      </div>
+    );
+  }
+
+  return (
+    <ul className="grid gap-2">
+      {items.map((q) => (
+        <li key={q.id} className="rounded-3xl border border-white/10 bg-zinc-950 p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="rounded-full border border-white/10 bg-black/40 px-2 py-0.5 text-[11px] font-semibold text-zinc-300">
+                  {badge(q.category)}
+                </span>
+                <span className="rounded-full border border-white/10 bg-(--app-emerald)/15 px-2 py-0.5 text-[11px] font-semibold text-(--app-emerald)">
+                  達成
+                </span>
+              </div>
+              <div className="mt-2 text-[13px] font-semibold text-zinc-100">{q.title}</div>
+              <div className="mt-2 text-[12px] text-zinc-500">
+                {q.completed_at ? `達成: ${new Date(q.completed_at).toLocaleString()}` : "達成済み"}
+              </div>
+            </div>
+            <Link
+              href={`/quests/${q.id}`}
+              className="rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-[13px] font-semibold text-zinc-100 hover:border-white/20"
+            >
+              証拠を見る
+            </Link>
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function estimatedTemplateDays(template: QuestTemplate, avgMonthlyExpense: number | null) {
+  if (template.recommended?.cutFixed) {
+    return estimateRecoveredDays(template.recommended.cutFixed, avgMonthlyExpense) ?? 5;
+  }
+  if (template.recommended?.boostIncome) {
+    return estimateRecoveredDays(template.recommended.boostIncome, avgMonthlyExpense) ?? 6;
+  }
+  if (template.reward.shield === "ironwall") return 9;
+  if (template.reward.shield === "basic") return 6;
+  if (template.reward.armor) return 5;
+  return 4;
+}
+
+function estimatedQuestDays(quest: UserQuestRow, avgMonthlyExpense: number | null) {
+  const reward = asQuestReward(quest.reward);
+  if (quest.recommended_cut_fixed) {
+    return estimateRecoveredDays(quest.recommended_cut_fixed, avgMonthlyExpense) ?? 5;
+  }
+  if (quest.recommended_boost_income) {
+    return estimateRecoveredDays(quest.recommended_boost_income, avgMonthlyExpense) ?? 6;
+  }
+  if (quest.category === "shield") {
+    if (reward.shield === "ironwall") return 9;
+    if (reward.shield === "basic") return 6;
+  }
+  if (reward.armor) return 5;
+  return estimateRecoveredDays(quest.category === "doping" ? 8000 : 4000, avgMonthlyExpense) ?? 5;
+}
+
+function deltaLabel(days: number | null) {
+  if (days === null) return "効果見積もり中";
+  return `推定 +${days}日`;
+}
+
+function pickHero(input: {
+  active: UserQuestRow[];
+  aiItems: Array<{
+    id: string;
+    title: string;
+    description: string;
+    category: "poison" | "doping" | "shield";
+    estimatedDeltaDays: number;
+    linkedQuestId: string | null;
+  }>;
+  templates: QuestTemplate[];
+  activeByKey: Map<string, UserQuestRow>;
+  completedByKey: Map<string, UserQuestRow>;
+  avgMonthlyExpense: number | null;
+}): Hero {
+  const activeQuest = input.active[0];
+  if (activeQuest) {
+    return {
+      kind: "active",
+      title: activeQuest.title,
+      description: "すでに着手しています。今日は証拠を出して、装備獲得まで進めましょう。",
+      categoryLabel: badge(activeQuest.category),
+      deltaLabel: deltaLabel(estimatedQuestDays(activeQuest, input.avgMonthlyExpense)),
+      href: `/quests/${activeQuest.id}`,
+      ctaLabel: "証拠を提出する",
+      eyebrow: "今やるべき1件",
+    };
+  }
+
+  const aiHero = input.aiItems[0];
+  if (aiHero) {
+    return {
+      kind: "ai",
+      id: aiHero.id,
+      title: aiHero.title,
+      description: aiHero.description,
+      categoryLabel: badge(aiHero.category),
+      deltaLabel: `推定 +${aiHero.estimatedDeltaDays}日`,
+      linkedQuestId: aiHero.linkedQuestId,
+      eyebrow: "バディからの密書",
+    };
+  }
+
+  const templateHero = [...input.templates]
+    .filter((template) => !input.activeByKey.has(template.key) && !input.completedByKey.has(template.key))
+    .sort(
+      (a, b) =>
+        estimatedTemplateDays(b, input.avgMonthlyExpense) -
+        estimatedTemplateDays(a, input.avgMonthlyExpense),
+    )[0];
+
+  if (!templateHero) return null;
+
+  return {
+    kind: "template",
+    templateKey: templateHero.key,
+    title: templateHero.title,
+    description: templateHero.description,
+    categoryLabel: badge(templateHero.category),
+    deltaLabel: deltaLabel(estimatedTemplateDays(templateHero, input.avgMonthlyExpense)),
+    eyebrow: "次にやるべき標準クエスト",
+  };
 }
 

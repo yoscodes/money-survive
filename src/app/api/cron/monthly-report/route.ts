@@ -1,8 +1,11 @@
 import { NextResponse } from "next/server";
 import { createSupabaseAdmin } from "@/lib/supabase/admin";
 import { sendRetentionMail } from "@/lib/notifications/mailer";
-import { buildWeeklySummary } from "@/lib/notifications/pulse";
-import { sendWebPushToSubscriptions, type StoredPushSubscription } from "@/lib/notifications/webpush";
+import { buildMonthlySummary } from "@/lib/notifications/pulse";
+import {
+  sendWebPushToSubscriptions,
+  type StoredPushSubscription,
+} from "@/lib/notifications/webpush";
 import type { FinanceTransaction } from "@/lib/finance/insights";
 
 function isAuthorized(request: Request) {
@@ -20,14 +23,14 @@ type SubscriptionRow = StoredPushSubscription & {
 };
 
 export async function GET(request: Request) {
-  return runWeeklyReport(request);
+  return runMonthlyReport(request);
 }
 
 export async function POST(request: Request) {
-  return runWeeklyReport(request);
+  return runMonthlyReport(request);
 }
 
-async function runWeeklyReport(request: Request) {
+async function runMonthlyReport(request: Request) {
   try {
     if (!isAuthorized(request)) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -53,7 +56,7 @@ async function runWeeklyReport(request: Request) {
 
     const results: Array<{ userId: string; pushSent: number; pushFailed: number }> = [];
     for (const [userId, userSubscriptions] of grouped.entries()) {
-      const summary = await processUserWeeklyReport(admin, userId, userSubscriptions);
+      const summary = await processUserMonthlyReport(admin, userId, userSubscriptions);
       if (summary) results.push(summary);
     }
 
@@ -63,25 +66,25 @@ async function runWeeklyReport(request: Request) {
       results,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Weekly report failed";
+    const message = error instanceof Error ? error.message : "Monthly report failed";
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
 
-async function processUserWeeklyReport(
+async function processUserMonthlyReport(
   admin: ReturnType<typeof createSupabaseAdmin>,
   userId: string,
   subscriptions: SubscriptionRow[],
 ) {
   const now = new Date();
-  const weekKey = now.toISOString().slice(0, 10);
-  const dedupeKey = `weekly:${userId}:${weekKey}`;
+  const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  const dedupeKey = `monthly:${userId}:${monthKey}`;
 
   const { data: existing } = await admin
     .from("notification_events")
     .select("id")
     .eq("user_id", userId)
-    .eq("event_type", "weekly_report")
+    .eq("event_type", "monthly_report")
     .eq("dedupe_key", dedupeKey)
     .limit(1)
     .maybeSingle();
@@ -90,7 +93,7 @@ async function processUserWeeklyReport(
     return null;
   }
 
-  const since = new Date(now.getTime() - 21 * 24 * 60 * 60 * 1000).toISOString();
+  const since = new Date(now.getTime() - 70 * 24 * 60 * 60 * 1000).toISOString();
   const { data: txData, error: txError } = await admin
     .from("transactions")
     .select("id, created_at, type, amount, note")
@@ -101,7 +104,7 @@ async function processUserWeeklyReport(
   if (txError) {
     await admin.from("notification_events").insert({
       user_id: userId,
-      event_type: "weekly_report",
+      event_type: "monthly_report",
       channel: "push",
       status: "failed",
       dedupe_key: dedupeKey,
@@ -111,17 +114,17 @@ async function processUserWeeklyReport(
     return { userId, pushSent: 0, pushFailed: subscriptions.length };
   }
 
-  const summary = buildWeeklySummary(((txData ?? []) as FinanceTransaction[]) ?? [], now);
+  const summary = buildMonthlySummary(((txData ?? []) as FinanceTransaction[]) ?? [], now);
   const pushResult = await sendWebPushToSubscriptions(subscriptions, {
     title: summary.title,
     body: summary.body,
     url: summary.pushUrl,
-    tag: `weekly-${summary.weekKey}`,
+    tag: `monthly-${summary.monthKey}`,
   });
 
   await admin.from("notification_events").insert({
     user_id: userId,
-    event_type: "weekly_report",
+    event_type: "monthly_report",
     channel: "push",
     status: pushResult.failed > 0 && pushResult.sent === 0 ? "failed" : "sent",
     dedupe_key: dedupeKey,
@@ -145,12 +148,12 @@ async function processUserWeeklyReport(
       to: emailTo,
       subject: summary.subject,
       body: summary.body,
-      reportKey: summary.weekKey,
+      reportKey: summary.monthKey,
       title: summary.title,
       tone: summary.tone,
       ctaUrl: summary.pushUrl,
-      ctaLabel: "ダッシュボードを開く",
-      metricLabel: summary.tone === "positive" ? "今週の寿命差分" : "危険ライン",
+      ctaLabel: "バディの状態を見る",
+      metricLabel: summary.tone === "positive" ? "今月の寿命差分" : "危険ライン",
       metricValue:
         summary.tone === "positive"
           ? `+${Math.max(1, summary.deltaDays)}日`
@@ -159,7 +162,7 @@ async function processUserWeeklyReport(
 
     await admin.from("notification_events").insert({
       user_id: userId,
-      event_type: "weekly_report",
+      event_type: "monthly_report",
       channel: mailResult.channel,
       status: "sent",
       dedupe_key: `${dedupeKey}:email`,
@@ -173,7 +176,7 @@ async function processUserWeeklyReport(
     const message = error instanceof Error ? error.message : "email send failed";
     await admin.from("notification_events").insert({
       user_id: userId,
-      event_type: "weekly_report",
+      event_type: "monthly_report",
       channel: "email",
       status: "failed",
       dedupe_key: `${dedupeKey}:email`,

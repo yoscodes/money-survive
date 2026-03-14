@@ -34,7 +34,9 @@ export async function GET(request: Request) {
 
     const { data: quest } = await admin
       .from("user_quests")
-      .select("id, user_id, title, category, reward, completed_at, status")
+      .select(
+        "id, user_id, title, category, reward, completed_at, status, recommended_cut_fixed, recommended_boost_income",
+      )
       .eq("id", questId)
       .eq("status", "completed")
       .maybeSingle();
@@ -63,6 +65,8 @@ export async function GET(request: Request) {
         category: quest.category,
         completed_at: quest.completed_at,
         reward: quest.reward,
+        recommended_cut_fixed: quest.recommended_cut_fixed,
+        recommended_boost_income: quest.recommended_boost_income,
         age_group: otherProfile.age_group as AgeGroup,
         income_band: otherProfile.income_band as IncomeBand,
       }),

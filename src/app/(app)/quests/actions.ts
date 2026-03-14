@@ -3,6 +3,7 @@
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { createSupabaseServer } from "@/lib/supabase/server";
+import { createSupabaseAdmin } from "@/lib/supabase/admin";
 import { getQuestTemplate } from "@/lib/quests/templates";
 import { buildFinanceSnapshot, type FinanceTransaction } from "@/lib/finance/insights";
 import {
@@ -10,8 +11,15 @@ import {
   rewardForCategory,
   type AiTriggerDraft,
 } from "@/lib/ai/openai";
+import { createMapSegmentEventPayload } from "@/lib/social/mapEvents";
+import { isAgeGroup, isIncomeBand } from "@/lib/social/segment";
 
 export type AiTriggerActionState = {
+  error: string | null;
+  success: string | null;
+};
+
+export type QuestCompletionActionState = {
   error: string | null;
   success: string | null;
 };
@@ -72,6 +80,60 @@ export async function startQuest(templateKey: string) {
   redirect(`/quests/${data.id}`);
 }
 
+function readString(formData: FormData, key: string) {
+  const value = formData.get(key);
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function readOptionalNumber(formData: FormData, key: string) {
+  const raw = readString(formData, key);
+  if (!raw) return null;
+  const value = Number(raw);
+  return Number.isFinite(value) ? Math.max(0, Math.round(value)) : null;
+}
+
+export async function startCustomQuest(formData: FormData) {
+  const { supabase, user } = await requireUser();
+
+  const category = readString(formData, "category");
+  if (category !== "poison" && category !== "doping" && category !== "shield") {
+    throw new Error("Unknown custom quest category");
+  }
+
+  const title = readString(formData, "title").slice(0, 80) || "カスタムクエスト";
+  const description = readString(formData, "description").slice(0, 240) || "明日からできる改善案です。";
+  const proofHint =
+    readString(formData, "proofHint").slice(0, 160) ||
+    "行動後のスクショ、または実行内容がわかる1行メモ";
+  const recommendedCutFixed = readOptionalNumber(formData, "recommendedCutFixed");
+  const recommendedBoostIncome = readOptionalNumber(formData, "recommendedBoostIncome");
+
+  const reward = rewardForCategory(category);
+  const templateKey = `custom:${category}:${Date.now()}`;
+  const { data, error } = await supabase
+    .from("user_quests")
+    .insert({
+      user_id: user.id,
+      template_key: templateKey,
+      title,
+      description,
+      category,
+      status: "active",
+      source: "template",
+      reward,
+      recommended_cut_fixed: recommendedCutFixed,
+      recommended_boost_income: recommendedBoostIncome,
+      proof_hint: proofHint,
+    })
+    .select("id")
+    .single();
+
+  if (error) throw new Error(error.message);
+  revalidatePath("/quests");
+  revalidatePath("/triggers");
+  redirect(`/quests/${data.id}`);
+}
+
 export async function attachQuestProof(params: {
   questId: string;
   proofPath: string;
@@ -92,15 +154,18 @@ export async function attachQuestProof(params: {
   revalidatePath("/quests");
 }
 
-export async function completeQuest(params: {
+async function completeQuest(params: {
   questId: string;
   proofNote: string;
 }) {
-  const { supabase } = await requireUser();
+  const { supabase, user } = await requireUser();
+  const completedAt = new Date().toISOString();
 
   const { data: questData } = await supabase
     .from("user_quests")
-    .select("ai_trigger_id")
+    .select(
+      "id, ai_trigger_id, title, category, reward, recommended_cut_fixed, recommended_boost_income",
+    )
     .eq("id", params.questId)
     .maybeSingle();
 
@@ -108,7 +173,7 @@ export async function completeQuest(params: {
     .from("user_quests")
     .update({
       status: "completed",
-      completed_at: new Date().toISOString(),
+      completed_at: completedAt,
       proof_note: params.proofNote.trim().length ? params.proofNote.trim() : null,
     })
     .eq("id", params.questId);
@@ -117,6 +182,38 @@ export async function completeQuest(params: {
 
   const aiTriggerId =
     questData && typeof questData.ai_trigger_id === "string" ? questData.ai_trigger_id : null;
+
+  const admin = createSupabaseAdmin();
+  const { data: profileData } = await admin
+    .from("user_profiles")
+    .select("age_group, income_band")
+    .eq("user_id", user.id)
+    .maybeSingle();
+
+  if (
+    questData &&
+    profileData &&
+    isAgeGroup(profileData.age_group) &&
+    isIncomeBand(profileData.income_band)
+  ) {
+    const eventPayload = createMapSegmentEventPayload({
+      userId: user.id,
+      questId: questData.id,
+      title: questData.title,
+      category: questData.category,
+      reward: questData.reward,
+      completedAt,
+      ageGroup: profileData.age_group,
+      incomeBand: profileData.income_band,
+      recommendedCutFixed: questData.recommended_cut_fixed,
+      recommendedBoostIncome: questData.recommended_boost_income,
+    });
+
+    await admin.from("map_segment_events").upsert(eventPayload, {
+      onConflict: "quest_id",
+    });
+  }
+
   if (aiTriggerId) {
     await supabase
       .from("ai_triggers")
@@ -128,6 +225,30 @@ export async function completeQuest(params: {
   revalidatePath("/quests");
   revalidatePath("/dashboard");
   revalidatePath("/map");
+}
+
+export async function completeQuestAction(
+  _prevState: QuestCompletionActionState,
+  formData: FormData,
+): Promise<QuestCompletionActionState> {
+  try {
+    const questId = readString(formData, "questId");
+    const proofNote = readString(formData, "proofNote");
+    if (!questId) {
+      return { error: "クエストIDが見つかりません。", success: null };
+    }
+
+    await completeQuest({ questId, proofNote });
+    return {
+      error: null,
+      success: "証拠を確認しました。バディに装備が追加されます。",
+    };
+  } catch (error) {
+    return {
+      error: error instanceof Error ? error.message : "クエスト達成に失敗しました。",
+      success: null,
+    };
+  }
 }
 
 export async function abandonQuest(questId: string) {

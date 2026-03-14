@@ -6,6 +6,8 @@ import { PrimaryButton, SubtleButton } from "@/components/ui";
 import { SolutionLinkCard } from "@/components/monetization/SolutionLinkCard";
 import { ProfessionalAdviceCard } from "@/components/monetization/ProfessionalAdviceCard";
 import type { SolutionLink } from "@/lib/monetization/solutions";
+import { startCustomQuest } from "@/app/(app)/quests/actions";
+import { BuddyAvatar, wealthFromSavings, type BuddyRisk } from "@/components/buddy/BuddyAvatar";
 
 function calcSurvivalDays(savings: number, avgMonthlyExpense: number | null) {
   if (!avgMonthlyExpense || avgMonthlyExpense <= 0) return null;
@@ -19,11 +21,21 @@ function deltaDaysLabel(delta: number | null) {
   return delta > 0 ? `+${delta}日` : `${delta}日`;
 }
 
+function riskFromDays(days: number | null): BuddyRisk {
+  if (days === null) return "unknown";
+  if (!Number.isFinite(days)) return "safe";
+  if (days <= 7) return "danger";
+  if (days <= 21) return "warn";
+  return "safe";
+}
+
 export function TriggerCenter({
   savings,
   avgMonthlyExpense,
   initialCutFixed,
   initialBoostIncome,
+  poisonTargets,
+  shieldPreviewLabel,
   poisonLinks,
   dopingLinks,
   shieldLinks,
@@ -34,6 +46,8 @@ export function TriggerCenter({
   avgMonthlyExpense: number | null;
   initialCutFixed?: number;
   initialBoostIncome?: number;
+  poisonTargets: Array<{ label: string; amount: number }>;
+  shieldPreviewLabel: string;
   poisonLinks: SolutionLink[];
   dopingLinks: SolutionLink[];
   shieldLinks: SolutionLink[];
@@ -66,6 +80,40 @@ export function TriggerCenter({
     avgMonthlyExpense === null
       ? "—"
       : `${Math.round(avgMonthlyExpense).toLocaleString()}円/月`;
+  const [badEvent, setBadEvent] = useState<"bankruptcy" | "hospital" | "repair">("hospital");
+
+  const badEventPreview = useMemo(() => {
+    const monthlyShock = avgMonthlyExpense ? Math.round(avgMonthlyExpense * 1.5) : 180000;
+    const eventMap = {
+      bankruptcy: {
+        label: "もし明日、会社が倒産したら？",
+        loss: monthlyShock,
+        body: "無収入の1.5か月を想定。今のうちに盾を装備しておかないと、再就職までにバディが崩れます。",
+      },
+      hospital: {
+        label: "もし入院で30万円飛んだら？",
+        loss: 300000,
+        body: "急な医療費の一撃。ゆとりがある今、盾を持つ理由を見える化します。",
+      },
+      repair: {
+        label: "もし家電と住居トラブルが重なったら？",
+        loss: avgMonthlyExpense ? Math.round(avgMonthlyExpense * 0.8) : 120000,
+        body: "修理・引っ越し系の出費は連続で来ます。今は平気でも、波が来ると一気に瀕死です。",
+      },
+    } as const;
+    const current = eventMap[badEvent];
+    const afterSavings = Math.max(0, savings - current.loss);
+    const afterDays = calcSurvivalDays(afterSavings, avgMonthlyExpense);
+    const delta =
+      baseDays === null || afterDays === null ? null : afterDays - baseDays;
+
+    return {
+      ...current,
+      afterSavings,
+      afterDays,
+      delta,
+    };
+  }, [avgMonthlyExpense, badEvent, baseDays, savings]);
 
   return (
     <div className="grid gap-5">
@@ -138,9 +186,43 @@ export function TriggerCenter({
                 )}
               </div>
 
+              {poisonTargets.length ? (
+                <div className="rounded-2xl border border-white/10 bg-zinc-950 px-4 py-3 text-[12px] leading-5 text-zinc-400">
+                  ターゲット候補:
+                  <span className="ml-2 text-zinc-200">
+                    {poisonTargets
+                      .map((target) => `${target.label}（${target.amount.toLocaleString()}円）`)
+                      .join("、")}
+                  </span>
+                </div>
+              ) : null}
+
               {poisonLinks.slice(1, 2).map((link) => (
                 <SolutionLinkCard key={link.id} link={link} compact />
               ))}
+
+              <form action={startCustomQuest} className="mt-2">
+                <input type="hidden" name="category" value="poison" />
+                <input type="hidden" name="title" value={`固定費を${cutFixed.toLocaleString()}円減らす`} />
+                <input
+                  type="hidden"
+                  name="description"
+                  value={
+                    poisonTargets.length
+                      ? `${poisonTargets.map((target) => target.label).join(" / ")} を見直して、毎月${cutFixed.toLocaleString()}円ぶんの毒消しを狙う。`
+                      : `固定費を見直して、毎月${cutFixed.toLocaleString()}円ぶんの毒消しを狙う。`
+                  }
+                />
+                <input
+                  type="hidden"
+                  name="proofHint"
+                  value="解約完了や料金見直し後の金額がわかるスクショ、または実行メモ"
+                />
+                <input type="hidden" name="recommendedCutFixed" value={String(cutFixed)} />
+                <PrimaryButton type="submit" className="mt-3 w-full">
+                  この目標でクエストを開始
+                </PrimaryButton>
+              </form>
             </div>
           </ActionCard>
 
@@ -194,6 +276,29 @@ export function TriggerCenter({
               {dopingLinks.slice(1, 2).map((link) => (
                 <SolutionLinkCard key={link.id} link={link} compact />
               ))}
+
+              <form action={startCustomQuest} className="mt-2">
+                <input type="hidden" name="category" value="doping" />
+                <input
+                  type="hidden"
+                  name="title"
+                  value={`収入を${boostIncome.toLocaleString()}円増やす`}
+                />
+                <input
+                  type="hidden"
+                  name="description"
+                  value={`副業や単発収入で、毎月${boostIncome.toLocaleString()}円の上振れを作る。`}
+                />
+                <input
+                  type="hidden"
+                  name="proofHint"
+                  value="応募完了や入金見込みがわかるスクショ、または実行メモ"
+                />
+                <input type="hidden" name="recommendedBoostIncome" value={String(boostIncome)} />
+                <PrimaryButton type="submit" className="mt-3 w-full">
+                  この目標でクエストを開始
+                </PrimaryButton>
+              </form>
             </div>
           </ActionCard>
 
@@ -205,7 +310,7 @@ export function TriggerCenter({
           >
             <div className="grid gap-3">
               <div className="rounded-2xl border border-white/10 bg-black/40 px-4 py-3 text-[13px] text-zinc-300">
-                「今すぐ増やす」より、まずは“致命傷”を防ぐ。大きい損失を避けると、生存日数は守れます。
+                {shieldPreviewLabel}
               </div>
               <div className="flex gap-2">
                 {shieldLinks[0] ? (
@@ -230,6 +335,20 @@ export function TriggerCenter({
               {shieldLinks.slice(1, 2).map((link) => (
                 <SolutionLinkCard key={link.id} link={link} compact />
               ))}
+
+              <form action={startCustomQuest}>
+                <input type="hidden" name="category" value="shield" />
+                <input type="hidden" name="title" value="急な出費に備える盾を作る" />
+                <input type="hidden" name="description" value={shieldPreviewLabel} />
+                <input
+                  type="hidden"
+                  name="proofHint"
+                  value="保険見直しや緊急資金の置き場所がわかるスクショ、または実行メモ"
+                />
+                <PrimaryButton type="submit" className="w-full">
+                  この目標でクエストを開始
+                </PrimaryButton>
+              </form>
             </div>
           </ActionCard>
         </div>
@@ -257,6 +376,79 @@ export function TriggerCenter({
               }
             />
             <MiniStat label="やること" value="固定費1つ / 稼ぎ+1つ / 盾1つ" />
+          </div>
+        </div>
+
+        <div className="mt-6 rounded-3xl border border-white/10 bg-[radial-gradient(circle_at_top_left,rgba(220,20,60,0.18),rgba(0,0,0,0.88)_58%)] p-6">
+          <div className="text-[12px] font-semibold text-zinc-500">タイムトラベル</div>
+          <div className="mt-2 text-sm font-semibold tracking-tight text-zinc-100">
+            今は平気でも、明日の一撃でバディは倒れるかもしれない
+          </div>
+          <p className="mt-2 max-w-2xl text-[13px] leading-6 text-zinc-400">
+            未来の悪い波を先に体験して、盾を持つ理由をはっきりさせます。
+          </p>
+
+          <div className="mt-4 flex flex-wrap gap-2">
+            {[
+              ["bankruptcy", "会社が倒産"],
+              ["hospital", "入院で30万円"],
+              ["repair", "住居トラブル"],
+            ].map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setBadEvent(key as "bankruptcy" | "hospital" | "repair")}
+                className="rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-[13px] font-semibold text-zinc-100 hover:border-white/20"
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          <div className="mt-5 grid gap-5 lg:grid-cols-[1fr,280px]">
+            <div className="rounded-3xl border border-white/10 bg-black/40 p-5">
+              <div className="text-[12px] font-semibold text-zinc-500">{badEventPreview.label}</div>
+              <div className="mt-3 text-[13px] leading-6 text-zinc-300">{badEventPreview.body}</div>
+              <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                <MiniStat
+                  label="想定ダメージ"
+                  value={`-${badEventPreview.loss.toLocaleString()}円`}
+                />
+                <MiniStat
+                  label="生存日数"
+                  value={badEventPreview.afterDays === null ? "—" : `${badEventPreview.afterDays}日`}
+                />
+                <MiniStat
+                  label="変化"
+                  value={deltaDaysLabel(badEventPreview.delta)}
+                />
+              </div>
+              <div className="mt-4 rounded-2xl border border-white/10 bg-(--app-crimson)/10 px-4 py-3 text-[13px] leading-6 text-zinc-200">
+                ゆとりがある今、盾を先に装備しておくと「即死イベント」を避けやすくなります。
+              </div>
+            </div>
+
+            <motion.div
+              key={badEvent}
+              initial={{ opacity: 0, scale: 0.96, y: 8 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              transition={{ duration: 0.22, ease: "easeOut" }}
+              className="rounded-3xl border border-white/10 bg-zinc-950 p-5"
+            >
+              <div className="text-[12px] font-semibold text-zinc-500">被弾後のバディ</div>
+              <div className="mt-4 flex justify-center">
+                <BuddyAvatar
+                  risk={riskFromDays(badEventPreview.afterDays)}
+                  wealth={wealthFromSavings(badEventPreview.afterSavings)}
+                  className="h-[200px] w-[200px]"
+                />
+              </div>
+              <div className="mt-4 text-center text-[13px] leading-6 text-zinc-400">
+                {badEventPreview.afterDays !== null && badEventPreview.afterDays <= 7
+                  ? "この一撃で瀕死です。盾クエストを先に終わらせる価値があります。"
+                  : "まだ立てていますが、次の一撃で崩れるかもしれません。"}
+              </div>
+            </motion.div>
           </div>
         </div>
 

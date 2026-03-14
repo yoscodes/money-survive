@@ -1,7 +1,7 @@
 "use client";
 
 import { AnimatePresence, motion } from "framer-motion";
-import { useActionState, useEffect, useMemo, useRef, useState } from "react";
+import { useActionState, useEffect, useRef, useState } from "react";
 import {
   addTransaction,
   deleteTransaction,
@@ -9,7 +9,7 @@ import {
   type TxActionState,
 } from "./actions";
 import { PrimaryButton, SubtleButton, TextInput } from "@/components/ui";
-import { APP_TIME_ZONE, monthKeyInTimeZone } from "@/lib/finance/insights";
+import { formatLifetimeLoss } from "@/lib/finance/insights";
 
 import type { Transaction } from "./types";
 
@@ -50,7 +50,7 @@ function consumeDashboardToast() {
   return null;
 }
 
-export function AddTransactionCard() {
+export function AddTransactionCard({ hasTransactions }: { hasTransactions: boolean }) {
   const [state, action, pending] = useActionState(addTransaction, initialState);
   const formRef = useRef<HTMLFormElement | null>(null);
 
@@ -69,7 +69,9 @@ export function AddTransactionCard() {
     <div className="rounded-3xl border border-white/10 bg-zinc-950 p-6 shadow-sm shadow-black/30">
       <div className="text-sm font-semibold tracking-tight">ログを追加</div>
       <p className="mt-2 text-[13px] leading-6 text-zinc-400">
-        今日の収支を素早く記録して、変化を見える化します。
+        {hasTransactions
+          ? "今日の収支を素早く記録して、変化を見える化します。"
+          : "まずは家賃を入れて、バディを土俵際に立たせましょう。危機が見えると改善も始めやすくなります。"}
       </p>
 
       <form ref={formRef} action={action} className="mt-5 grid gap-3">
@@ -124,14 +126,15 @@ export function AddTransactionCard() {
   );
 }
 
-export function TransactionList({ items }: { items: Transaction[] }) {
+export function TransactionList({
+  items,
+  avgMonthlyExpense,
+}: {
+  items: Transaction[];
+  avgMonthlyExpense: number | null;
+}) {
   const [toast, setToast] = useState<DashboardToastPayload | null>(null);
   const hideTimerRef = useRef<number | null>(null);
-  const [typeFilter, setTypeFilter] = useState<"all" | "income" | "expense">("all");
-  const [periodFilter, setPeriodFilter] = useState<"all" | "month" | "quarter">("month");
-  const [sortBy, setSortBy] = useState<"newest" | "oldest" | "amountDesc" | "amountAsc">("newest");
-  const [query, setQuery] = useState("");
-  const [visibleCount, setVisibleCount] = useState(20);
 
   useEffect(() => {
     const showToast = (payload: DashboardToastPayload) => {
@@ -170,48 +173,8 @@ export function TransactionList({ items }: { items: Transaction[] }) {
     };
   }, []);
 
-  const filteredItems = useMemo(() => {
-    const now = new Date();
-    const currentMonthKey = monthKeyInTimeZone(now, APP_TIME_ZONE);
-    const queryText = query.trim().toLowerCase();
-
-    return items
-      .filter((tx) => {
-        if (typeFilter !== "all" && tx.type !== typeFilter) return false;
-
-        const createdAt = new Date(tx.created_at);
-        if (periodFilter === "month") {
-          if (monthKeyInTimeZone(createdAt, APP_TIME_ZONE) !== currentMonthKey) return false;
-        }
-        if (periodFilter === "quarter") {
-          const since = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
-          if (createdAt < since) return false;
-        }
-
-        if (!queryText) return true;
-        const note = (tx.note ?? "").toLowerCase();
-        const amount = Math.round(tx.amount).toLocaleString();
-        const typeLabel = tx.type === "income" ? "収入" : "支出";
-        return (
-          note.includes(queryText) ||
-          amount.includes(queryText) ||
-          typeLabel.includes(queryText)
-        );
-      })
-      .sort((a, b) => {
-        if (sortBy === "oldest") {
-          return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
-        }
-        if (sortBy === "amountDesc") return b.amount - a.amount;
-        if (sortBy === "amountAsc") return a.amount - b.amount;
-        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-      });
-  }, [items, periodFilter, query, sortBy, typeFilter]);
-
-  const visibleItems = filteredItems.slice(0, visibleCount);
-
   return (
-    <div className="relative rounded-3xl border border-white/10 bg-zinc-950 p-6 shadow-sm shadow-black/30">
+    <div className="relative flex max-h-[70vh] min-h-[420px] flex-col overflow-hidden rounded-3xl border border-white/10 bg-zinc-950 p-6 shadow-sm shadow-black/30">
       <AnimatePresence>
         {toast ? <DashboardToast key={`${toast.tone}:${toast.title}:${toast.message}`} toast={toast} /> : null}
       </AnimatePresence>
@@ -220,89 +183,26 @@ export function TransactionList({ items }: { items: Transaction[] }) {
         <div>
           <div className="text-sm font-semibold tracking-tight">最近のログ</div>
           <div className="mt-2 text-[13px] text-zinc-400">
-            {filteredItems.length.toLocaleString()}件
-            <span className="ml-2 text-zinc-500">/ 全{items.length.toLocaleString()}件</span>
+            全{String(items.length)}件
+            <span className="ml-2 text-zinc-500">スクロールして確認</span>
           </div>
         </div>
       </div>
 
-      <div className="mt-5 grid gap-3">
-        <TextInput
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="メモ・金額で検索"
-        />
-
-        <div className="flex flex-wrap gap-2">
-          <FilterChip active={typeFilter === "all"} onClick={() => setTypeFilter("all")}>
-            すべて
-          </FilterChip>
-          <FilterChip active={typeFilter === "expense"} onClick={() => setTypeFilter("expense")}>
-            支出
-          </FilterChip>
-          <FilterChip active={typeFilter === "income"} onClick={() => setTypeFilter("income")}>
-            収入
-          </FilterChip>
-        </div>
-
-        <div className="grid gap-3 sm:grid-cols-2">
-          <label className="grid gap-1">
-            <span className="text-[12px] font-medium text-zinc-400">期間</span>
-            <select
-              value={periodFilter}
-              onChange={(event) =>
-                setPeriodFilter(event.target.value as "all" | "month" | "quarter")
-              }
-              className="h-11 rounded-xl border border-white/10 bg-zinc-950 px-3 text-[14px] text-zinc-100 outline-none focus:border-white/20"
-            >
-              <option value="month">今月</option>
-              <option value="quarter">直近3か月</option>
-              <option value="all">全期間</option>
-            </select>
-          </label>
-
-          <label className="grid gap-1">
-            <span className="text-[12px] font-medium text-zinc-400">並び替え</span>
-            <select
-              value={sortBy}
-              onChange={(event) =>
-                setSortBy(
-                  event.target.value as "newest" | "oldest" | "amountDesc" | "amountAsc",
-                )
-              }
-              className="h-11 rounded-xl border border-white/10 bg-zinc-950 px-3 text-[14px] text-zinc-100 outline-none focus:border-white/20"
-            >
-              <option value="newest">新しい順</option>
-              <option value="oldest">古い順</option>
-              <option value="amountDesc">金額が大きい順</option>
-              <option value="amountAsc">金額が小さい順</option>
-            </select>
-          </label>
-        </div>
+      <div className="mt-5 min-h-0 flex-1 overflow-y-auto pr-1">
+        <ul className="grid gap-2">
+          <AnimatePresence initial={false}>
+            {items.map((tx) => (
+              <TransactionRow key={tx.id} tx={tx} avgMonthlyExpense={avgMonthlyExpense} />
+            ))}
+          </AnimatePresence>
+        </ul>
       </div>
 
-      <ul className="mt-5 grid gap-2">
-        <AnimatePresence initial={false}>
-          {visibleItems.map((tx) => (
-            <TransactionRow key={tx.id} tx={tx} />
-          ))}
-        </AnimatePresence>
-      </ul>
-
-      {filteredItems.length === 0 ? (
+      {items.length === 0 ? (
         <div className="mt-4 rounded-2xl border border-dashed border-white/10 bg-black/30 px-4 py-5 text-[13px] text-zinc-400">
-          条件に合うログがありません。検索語や期間を変えてみてください。
+          まだログがありません。最初の儀式として、家賃や給料を1件入れて現実を起動しましょう。
         </div>
-      ) : null}
-
-      {visibleItems.length < filteredItems.length ? (
-        <SubtleButton
-          type="button"
-          className="mt-4 w-full"
-          onClick={() => setVisibleCount((current) => current + 20)}
-        >
-          さらに20件表示
-        </SubtleButton>
       ) : null}
     </div>
   );
@@ -362,8 +262,15 @@ function DashboardToast({ toast }: { toast: DashboardToastPayload }) {
   );
 }
 
-function TransactionRow({ tx }: { tx: Transaction }) {
+function TransactionRow({
+  tx,
+  avgMonthlyExpense,
+}: {
+  tx: Transaction;
+  avgMonthlyExpense: number | null;
+}) {
   const [isEditing, setIsEditing] = useState(false);
+  const lifetimeLoss = tx.type === "expense" ? formatLifetimeLoss(tx.amount, avgMonthlyExpense) : null;
 
   return (
     <motion.li
@@ -395,6 +302,11 @@ function TransactionRow({ tx }: { tx: Transaction }) {
             <div className="mt-1 text-[12px] text-zinc-500">
               {new Date(tx.created_at).toLocaleString("ja-JP")}
             </div>
+            {lifetimeLoss ? (
+              <div className="mt-1 text-[12px] font-medium text-(--app-crimson)">
+                この支出で寿命が {lifetimeLoss} 縮みました
+              </div>
+            ) : null}
           </div>
 
           <div className="flex items-center gap-2">
@@ -504,31 +416,6 @@ function DeleteTransactionButton({ id }: { id: string }) {
         {pending ? "削除中..." : "削除"}
       </SubtleButton>
     </form>
-  );
-}
-
-function FilterChip({
-  active,
-  children,
-  onClick,
-}: {
-  active: boolean;
-  children: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={[
-        "rounded-full border px-3 py-1.5 text-[12px] font-medium transition",
-        active
-          ? "border-transparent bg-(--app-emerald) text-black"
-          : "border-white/10 bg-black/40 text-zinc-300 hover:border-white/20",
-      ].join(" ")}
-    >
-      {children}
-    </button>
   );
 }
 

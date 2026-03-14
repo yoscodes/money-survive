@@ -1,11 +1,15 @@
 import { createSupabaseServer } from "@/lib/supabase/server";
 import { TriggerCenter } from "./TriggerCenter";
-import type { Transaction } from "../dashboard/types";
 import {
   loadSolutionLinks,
   pickFpLink,
   pickSolutionLinks,
 } from "@/lib/monetization/solutions";
+import {
+  buildFinanceSnapshot,
+  type ExpensePattern,
+  type FinanceTransaction,
+} from "@/lib/finance/insights";
 
 function readNumber(
   v: string | string[] | undefined,
@@ -35,21 +39,23 @@ export default async function TriggersPage({
     .order("created_at", { ascending: false })
     .limit(200);
 
-  const items = ((data ?? []) as Transaction[]) ?? [];
-  const savings =
-    items.reduce((acc, tx) => acc + (tx.type === "income" ? tx.amount : -tx.amount), 0) || 0;
+  const items = ((data ?? []) as FinanceTransaction[]) ?? [];
+  const snapshot = buildFinanceSnapshot(items);
+  const poisonTargets = pickTargets(
+    snapshot.heavyRecurringExpenses.length > 0
+      ? snapshot.heavyRecurringExpenses
+      : snapshot.recurringExpenseCandidates,
+  );
+  const defaultCutFixed =
+    poisonTargets.reduce((sum, target) => sum + target.amount, 0) ||
+    snapshot.recurringExpenseCandidates[0]?.averageAmount ||
+    3000;
+  const shieldTarget = snapshot.unusualExpenseItems[0] ?? snapshot.highExpenseItems[0] ?? null;
+  const shieldPreviewLabel = shieldTarget
+    ? `急な「${shieldTarget.label} ${shieldTarget.amount.toLocaleString()}円級」の出費でも、致命傷を避ける備え。`
+    : "急な医療費や修理代が来ても、生存日数を削られにくくする守り。";
 
-  const daysWindow = 90;
-  const now = items.length ? new Date(items[0].created_at) : new Date(0);
-  const since = new Date(now.getTime() - daysWindow * 24 * 60 * 60 * 1000);
-  const inWindow = items.filter((tx) => new Date(tx.created_at) >= since);
-  const windowExpense = inWindow
-    .filter((tx) => tx.type === "expense")
-    .reduce((acc, tx) => acc + tx.amount, 0);
-  const avgMonthlyExpense =
-    windowExpense > 0 ? (windowExpense / daysWindow) * 30 : null;
-
-  const initialCutFixed = readNumber(searchParams?.cutFixed, 3000, 0, 30000);
+  const initialCutFixed = readNumber(searchParams?.cutFixed, defaultCutFixed, 0, 30000);
   const initialBoostIncome = readNumber(searchParams?.boostIncome, 5000, 0, 60000);
   const { links: solutionLinks, error: solutionError } = await loadSolutionLinks(supabase, [
     "triggers",
@@ -77,10 +83,12 @@ export default async function TriggersPage({
 
   return (
     <TriggerCenter
-      savings={savings}
-      avgMonthlyExpense={avgMonthlyExpense}
+      savings={snapshot.savings}
+      avgMonthlyExpense={snapshot.avgMonthlyExpense}
       initialCutFixed={initialCutFixed}
       initialBoostIncome={initialBoostIncome}
+      poisonTargets={poisonTargets}
+      shieldPreviewLabel={shieldPreviewLabel}
       poisonLinks={poisonLinks}
       dopingLinks={dopingLinks}
       shieldLinks={shieldLinks}
@@ -88,5 +96,12 @@ export default async function TriggersPage({
       solutionError={solutionError}
     />
   );
+}
+
+function pickTargets(items: ExpensePattern[]) {
+  return items.slice(0, 2).map((item) => ({
+    label: item.label,
+    amount: item.averageAmount,
+  }));
 }
 

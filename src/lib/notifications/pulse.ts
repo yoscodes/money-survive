@@ -31,10 +31,51 @@ export type WeeklySummary = {
   netChange: number;
   expenseTotal: number;
   incomeTotal: number;
+  tone: "positive" | "warning";
+  depletionDateLabel: string | null;
+};
+
+export type MonthlySummary = {
+  monthKey: string;
+  title: string;
+  body: string;
+  subject: string;
+  pushUrl: string;
+  deltaDays: number;
+  netChange: number;
+  expenseTotal: number;
+  incomeTotal: number;
+  tone: "positive" | "warning";
+  depletionDateLabel: string | null;
+};
+
+export type LivenessPulseAlert = {
+  eventType: "liveness_check";
+  dedupeKey: string;
+  title: string;
+  body: string;
+  url: string;
+  payload: Record<string, unknown>;
 };
 
 function normalizeLabel(note: string | null) {
   return note?.trim().toLowerCase() ?? "";
+}
+
+function toMonthDay(date: Date) {
+  return `${date.getMonth() + 1}月${date.getDate()}日`;
+}
+
+function depletionDateLabel(snapshot: FinanceSnapshot, referenceDate: Date) {
+  if (
+    snapshot.survivalDays === null ||
+    !Number.isFinite(snapshot.survivalDays) ||
+    snapshot.survivalDays <= 0
+  ) {
+    return null;
+  }
+  const depletionDate = new Date(referenceDate.getTime() + snapshot.survivalDays * 24 * 60 * 60 * 1000);
+  return toMonthDay(depletionDate);
 }
 
 function calcHoursLost(amount: number, avgMonthlyExpense: number | null) {
@@ -152,6 +193,10 @@ export function createWeekKey(date: Date) {
   return date.toISOString().slice(0, 10);
 }
 
+function createMonthKey(date: Date) {
+  return date.toISOString().slice(0, 7);
+}
+
 function sumTransactions(items: FinanceTransaction[], type: "income" | "expense") {
   return items
     .filter((item) => item.type === type)
@@ -164,53 +209,136 @@ export function buildWeeklySummary(
 ): WeeklySummary {
   const end = new Date(referenceDate);
   const start = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000);
-  const prevStart = new Date(start.getTime() - 7 * 24 * 60 * 60 * 1000);
 
   const currentWeek = allTransactions.filter((tx) => {
     const createdAt = new Date(tx.created_at);
     return createdAt >= start && createdAt < end;
   });
-  const previousWeek = allTransactions.filter((tx) => {
-    const createdAt = new Date(tx.created_at);
-    return createdAt >= prevStart && createdAt < start;
-  });
 
   const currentIncome = sumTransactions(currentWeek, "income");
   const currentExpense = sumTransactions(currentWeek, "expense");
-  const previousIncome = sumTransactions(previousWeek, "income");
-  const previousExpense = sumTransactions(previousWeek, "expense");
-
   const netChange = currentIncome - currentExpense;
-  const previousNetChange = previousIncome - previousExpense;
   const snapshot = buildFinanceSnapshot(allTransactions);
   const avgMonthlyExpense = snapshot.avgMonthlyExpense;
+  const noActionWeek = currentWeek.length === 0;
   const deltaDaysRaw =
     avgMonthlyExpense && avgMonthlyExpense > 0 ? (netChange / avgMonthlyExpense) * 30 : 0;
   const deltaDays = Math.round(deltaDaysRaw);
-
-  const direction =
-    deltaDays > 0
-      ? `先週の行動で寿命が ${deltaDays} 日延びました。`
-      : deltaDays < 0
-        ? `先週の行動で寿命が ${Math.abs(deltaDays)} 日縮みました。`
-        : "先週の寿命変化は 0 日でした。";
-  const trend =
-    netChange >= previousNetChange
-      ? "前週より持ち直しています。"
-      : "前週より少し苦しくなっています。";
-
+  const depletionLabel = depletionDateLabel(snapshot, referenceDate);
+  const tone = noActionWeek || deltaDays <= 0 ? "warning" : "positive";
   const title = "ウィークリー・サバイバル・レポート";
-  const body = `${direction} 収入 ${Math.round(currentIncome).toLocaleString()}円 / 支出 ${Math.round(currentExpense).toLocaleString()}円。${trend}`;
+  const body =
+    tone === "positive"
+      ? `今週の決断でバディの寿命が ${Math.max(1, deltaDays)} 日延びました。収入 ${Math.round(
+          currentIncome,
+        ).toLocaleString()}円 / 支出 ${Math.round(currentExpense).toLocaleString()}円。`
+      : noActionWeek
+        ? `今週は記録も行動も止まっていました。${
+            depletionLabel ? `このままでは ${depletionLabel} に資金が尽きます。` : "まずは1件だけでも記録を戻しましょう。"
+          }`
+        : `今週はバディの寿命が ${Math.abs(deltaDays)} 日縮みました。${
+            depletionLabel ? `このままでは ${depletionLabel} に資金が尽きます。` : "まずは固定費か小口支出を1つ止血しましょう。"
+          }`;
 
   return {
     weekKey: createWeekKey(start),
     title,
-    subject: `${title}: ${direction}`,
+    subject:
+      tone === "positive"
+        ? `${title}: 今週の寿命 +${Math.max(1, deltaDays)}日`
+        : `${title}: 危機の再確認`,
     body,
     pushUrl: "/dashboard",
     deltaDays,
     netChange,
     expenseTotal: Math.round(currentExpense),
     incomeTotal: Math.round(currentIncome),
+    tone,
+    depletionDateLabel: depletionLabel,
   };
+}
+
+export function buildMonthlySummary(
+  allTransactions: FinanceTransaction[],
+  referenceDate: Date = new Date(),
+): MonthlySummary {
+  const end = new Date(referenceDate);
+  const start = new Date(end.getFullYear(), end.getMonth(), 1);
+
+  const currentMonth = allTransactions.filter((tx) => {
+    const createdAt = new Date(tx.created_at);
+    return createdAt >= start && createdAt < end;
+  });
+
+  const currentIncome = sumTransactions(currentMonth, "income");
+  const currentExpense = sumTransactions(currentMonth, "expense");
+  const netChange = currentIncome - currentExpense;
+  const snapshot = buildFinanceSnapshot(allTransactions);
+  const avgMonthlyExpense = snapshot.avgMonthlyExpense;
+  const deltaDaysRaw =
+    avgMonthlyExpense && avgMonthlyExpense > 0 ? (netChange / avgMonthlyExpense) * 30 : 0;
+  const deltaDays = Math.round(deltaDaysRaw);
+  const depletionLabel = depletionDateLabel(snapshot, referenceDate);
+  const tone = currentMonth.length === 0 || deltaDays <= 0 ? "warning" : "positive";
+
+  const title = "マンスリー・サバイバル・レポート";
+  const body =
+    tone === "positive"
+      ? `今月の行動でバディの寿命が ${Math.max(1, deltaDays)} 日伸びました。月間収支は ${Math.round(
+          netChange,
+        ).toLocaleString()}円。`
+      : currentMonth.length === 0
+        ? `今月はまだ記録が止まっています。${
+            depletionLabel ? `このままでは ${depletionLabel} に資金が尽きます。` : "まずはざっくり1件、家計を再起動しましょう。"
+          }`
+        : `今月は月間収支が ${Math.round(netChange).toLocaleString()}円。${
+            depletionLabel ? `このままでは ${depletionLabel} に資金が尽きます。` : "今月の止血ポイントを1つ決めましょう。"
+          }`;
+
+  return {
+    monthKey: createMonthKey(start),
+    title,
+    subject: `${title}: ${tone === "positive" ? `寿命 +${Math.max(1, deltaDays)}日` : "危機の再確認"}`,
+    body,
+    pushUrl: "/dashboard",
+    deltaDays,
+    netChange,
+    expenseTotal: Math.round(currentExpense),
+    incomeTotal: Math.round(currentIncome),
+    tone,
+    depletionDateLabel: depletionLabel,
+  };
+}
+
+export function buildLivenessPulseAlert(input: {
+  snapshot: FinanceSnapshot;
+  lastSeenAt: string | null;
+  referenceDate?: Date;
+}) {
+  const referenceDate = input.referenceDate ?? new Date();
+  const lastSeen = input.lastSeenAt ? new Date(input.lastSeenAt) : null;
+  const daysAway = lastSeen
+    ? Math.floor((referenceDate.getTime() - lastSeen.getTime()) / (24 * 60 * 60 * 1000))
+    : 99;
+  if (daysAway < 3) return null;
+
+  const depletionLabel = depletionDateLabel(input.snapshot, referenceDate);
+  const survivalDays = input.snapshot.survivalDays;
+  return {
+    eventType: "liveness_check" as const,
+    dedupeKey: `liveness:${lastSeen ? lastSeen.toISOString().slice(0, 10) : "never"}`,
+    title: "……まだ、生きてる？",
+    body:
+      survivalDays !== null && Number.isFinite(survivalDays)
+        ? `${
+            depletionLabel ? `このままでは ${depletionLabel} に資金が尽きます。` : `生存日数はあと ${survivalDays} 日です。`
+          } バディが帰還を待っています。`
+        : "3日以上ログが止まっています。ざっくり1件でいいので、生存確認を返してください。",
+    url: "/dashboard",
+    payload: {
+      daysAway,
+      survivalDays,
+      depletionDateLabel: depletionLabel,
+    },
+  } satisfies LivenessPulseAlert;
 }
